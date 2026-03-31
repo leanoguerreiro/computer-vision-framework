@@ -106,5 +106,5 @@ if __name__ == "__main__":
     "efficientnetv2_m"
 ]
 
-    # Você pode alterar o batch_size aqui para testar o limite da RTX 4060
-    testar_limites_vram(modelos_candidatos, batch_size=16)
+    # Você pode alterar o batch_size aqui para testar o limite da RTX 3060
+    testar_limites_vram(modelos_candidatos, batch_size=32)
