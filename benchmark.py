@@ -17,7 +17,9 @@ import torchvision.transforms.functional as TF
 from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix, roc_curve, auc
 from sklearn.preprocessing import label_binarize
 from tqdm import tqdm
+from dotenv import load_dotenv
 
+load_dotenv()
 # =============================================================================
 # CONFIGURAÇÃO GLOBAL
 # =============================================================================
@@ -25,7 +27,7 @@ from tqdm import tqdm
 PASTA_RAIZ = "mri_split_70_20_10"
 PLOT_DIR = "plots"
 RESULTS_DIR = "results"
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 NUM_EPOCHS = 50
 LR = 1e-4
 ES_PATIENCE = 5
