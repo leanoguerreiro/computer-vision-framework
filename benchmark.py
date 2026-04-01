@@ -65,8 +65,7 @@ MODELOS = [
     "xcit_small_12_p16_224",
     "vit_base_patch32_224",
     # ── médico: densenet169 com pesos ImageNet ─────────────────────────────────
-    "densenet169",
-    "resnet50_radimagenet"
+    "densenet169"
 ]
 
 # URL dos pesos RadImageNet (resnet50)
