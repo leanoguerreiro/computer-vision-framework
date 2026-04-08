@@ -17,9 +17,7 @@ import torchvision.transforms.functional as TF
 from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix, roc_curve, auc
 from sklearn.preprocessing import label_binarize
 from tqdm import tqdm
-from dotenv import load_dotenv
 
-load_dotenv()
 # =============================================================================
 # CONFIGURAÇÃO GLOBAL
 # =============================================================================
