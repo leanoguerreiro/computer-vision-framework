@@ -64,6 +64,14 @@ set_seed(42)
 # CLASSES DE TRANSFORMAÇÃO E PERTURBAÇÃO
 # =============================================================================
 
+class AdjustContrast:
+    """Classe serializável para ajustar o contraste (substitui o lambda)."""
+    def __init__(self, factor):
+        self.factor = factor
+
+    def __call__(self, img):
+        return TF.adjust_contrast(img, self.factor)
+
 class SquarePad:
     """Adiciona padding para tornar a imagem quadrada antes do resize."""
 
@@ -132,15 +140,15 @@ perturbation_transforms = {
 
     # ── CONTRASTE (Simula calibração deficiente da máquina MRI) ──────────────
     "Contrast_Leve": transforms.Compose(base_transforms + [
-        transforms.Lambda(lambda img: TF.adjust_contrast(img, 0.6)),  # 60% do original
+        AdjustContrast(0.6),  # Substituiu o lambda!
         transforms.ToTensor(), normalize
     ]),
     "Contrast_Moderada": transforms.Compose(base_transforms + [
-        transforms.Lambda(lambda img: TF.adjust_contrast(img, 0.3)),  # 30% do original
+        AdjustContrast(0.3),  # Substituiu o lambda!
         transforms.ToTensor(), normalize
     ]),
     "Contrast_Extrema": transforms.Compose(base_transforms + [
-        transforms.Lambda(lambda img: TF.adjust_contrast(img, 0.1)),  # 10% do original (quase cinza)
+        AdjustContrast(0.1),  # Substituiu o lambda!
         transforms.ToTensor(), normalize
     ])
 }
