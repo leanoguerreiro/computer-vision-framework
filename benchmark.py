@@ -470,43 +470,60 @@ def train_model(model_name: str) -> dict:
 
 
 # =============================================================================
-# EXECUÇÃO E RANKING GLOBAL
+# EXECUÇÃO E ATUALIZAÇÃO DO RANKING GLOBAL (APPEND)
 # =============================================================================
 
-resultados = [train_model(nome) for nome in MODELOS]
+if __name__ == "__main__":
+    # Treina apenas os modelos que estão na lista MODELOS (neste caso, só a SNN)
+    resultados_novos = [train_model(nome) for nome in MODELOS]
 
-df = pd.DataFrame(resultados)
-df["Params_M"] = df["Parâmetros"] / 1e6
+    df_novo = pd.DataFrame(resultados_novos)
+    df_novo["Params_M"] = df_novo["Parâmetros"] / 1e6
 
-# Ranking final baseado no Teste
-df = df.sort_values("Test_F1-Macro", ascending=False)
+    csv_path = os.path.join(PLOT_DIR, "benchmark_results_test_train.csv")
 
-df.to_csv(os.path.join(PLOT_DIR, "benchmark_results_test_train.csv"), index=False)
-print("\n" + "=" * 85)
-print("RANKING FINAL (MÉTRICAS DE TREINO, VALIDAÇÃO E TESTE)")
-print("=" * 85)
-# Exibindo as métricas principais lado a lado para facilitar a comparação de overfitting
-colunas_exibicao = ["Modelo", "Train_F1-Macro", "Val_F1-Macro", "Test_F1-Macro", "Test_AUC-Macro"]
-print(df[colunas_exibicao].to_string(index=False))
+    # Se o CSV antigo já existir, nós unimos os dados
+    if os.path.exists(csv_path):
+        print(f"\nAtualizando o arquivo existente: {csv_path}")
+        df_antigo = pd.read_csv(csv_path)
 
-# ── Ranking por F1 (Teste) ────────────────────────────────────────────────────
-fig, ax = plt.subplots(figsize=(12, 8))
-sns.barplot(data=df, x="Test_F1-Macro", y="Modelo", hue="Modelo", palette="viridis", legend=False, ax=ax)
-ax.set_title("Ranking Global — F1-Score Macro (CONJUNTO DE TESTE)")
-fig.tight_layout()
-fig.savefig(os.path.join(PLOT_DIR, "ranking_f1_test.png"), dpi=300)
-plt.close(fig)
+        # Remove o modelo atual caso ele já esteja no CSV (evita duplicatas se você rodar 2 vezes)
+        modelos_treinados_agora = df_novo["Modelo"].tolist()
+        df_antigo = df_antigo[~df_antigo["Modelo"].isin(modelos_treinados_agora)]
 
-# ── Eficiência: tamanho vs performance no Teste ───────────────────────────────
-fig, ax = plt.subplots(figsize=(12, 8))
-sns.scatterplot(data=df, x="Params_M", y="Test_F1-Macro", hue="Modelo",
-                s=200, palette="tab20", legend=False, ax=ax)
-for _, row in df.iterrows():
-    ax.text(row["Params_M"] + 0.5, row["Test_F1-Macro"], row["Modelo"], fontsize=9)
-ax.set_title("Eficiência (Teste) — Parâmetros vs F1")
-ax.set_xlabel("Parâmetros (M)")
-fig.tight_layout()
-fig.savefig(os.path.join(PLOT_DIR, "eficiencia_test.png"), dpi=300)
-plt.close(fig)
+        # Junta o resultado antigo com o novo
+        df_final = pd.concat([df_antigo, df_novo], ignore_index=True)
+    else:
+        df_final = df_novo
 
-print(f"\nBenchmark concluído. Relatórios salvos em: {PLOT_DIR}/")
+    # Ranking final baseado no Teste atualizado
+    df_final = df_final.sort_values("Test_F1-Macro", ascending=False)
+    df_final.to_csv(csv_path, index=False)
+
+    print("\n" + "=" * 85)
+    print("RANKING FINAL ATUALIZADO (MÉTRICAS DE TREINO, VALIDAÇÃO E TESTE)")
+    print("=" * 85)
+    colunas_exibicao = ["Modelo", "Train_F1-Macro", "Val_F1-Macro", "Test_F1-Macro", "Test_AUC-Macro"]
+    print(df_final[colunas_exibicao].to_string(index=False))
+
+    # ── Ranking por F1 (Teste) ────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(12, 8))
+    sns.barplot(data=df_final, x="Test_F1-Macro", y="Modelo", hue="Modelo", palette="viridis", legend=False, ax=ax)
+    ax.set_title("Ranking Global — F1-Score Macro (CONJUNTO DE TESTE)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(PLOT_DIR, "ranking_f1_test.png"), dpi=300)
+    plt.close(fig)
+
+    # ── Eficiência: tamanho vs performance no Teste ───────────────────────────────
+    fig, ax = plt.subplots(figsize=(12, 8))
+    sns.scatterplot(data=df_final, x="Params_M", y="Test_F1-Macro", hue="Modelo",
+                    s=200, palette="tab20", legend=False, ax=ax)
+    for _, row in df_final.iterrows():
+        ax.text(row["Params_M"] + 0.5, row["Test_F1-Macro"], row["Modelo"], fontsize=9)
+    ax.set_title("Eficiência (Teste) — Parâmetros vs F1")
+    ax.set_xlabel("Parâmetros (M)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(PLOT_DIR, "eficiencia_test.png"), dpi=300)
+    plt.close(fig)
+
+    print(f"\nTreino e atualização concluídos. Relatórios atualizados salvos em: {PLOT_DIR}/")
