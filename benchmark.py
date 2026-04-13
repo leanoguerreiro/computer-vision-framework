@@ -1,6 +1,7 @@
 import os
 import gc
 import random
+import time
 
 import numpy as np
 import pandas as pd
@@ -13,19 +14,27 @@ import timm
 from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+from torchvision.transforms import v2
 import torchvision.transforms.functional as TF
 from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix, roc_curve, auc
 from sklearn.preprocessing import label_binarize
 from tqdm import tqdm
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.image import show_cam_on_image
+from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
+import warnings
+import umap
+from statsmodels.stats.contingency_tables import mcnemar
+warnings.filterwarnings("ignore", category=UserWarning)
 
 # =============================================================================
 # CONFIGURAÇÃO GLOBAL
 # =============================================================================
-
-PASTA_RAIZ = "mri_split_70_20_10"
-PLOT_DIR = "plots"
-RESULTS_DIR = "results"
-BATCH_SIZE = 32
+INPUT_DIR = "datasets"
+PASTA_RAIZ = f"{INPUT_DIR}/mri_split_70_20_10"
+PLOT_DIR = f"plots/{os.path.basename(PASTA_RAIZ)}"
+RESULTS_DIR = f"results/{os.path.basename(PASTA_RAIZ)}"
+BATCH_SIZE = 16
 NUM_EPOCHS = 50
 LR = 1e-4
 ES_PATIENCE = 5
@@ -37,36 +46,39 @@ BATCH_SIZE_OVERRIDE = {
 }
 
 MODELOS = [
-    # ── originais ──────────────────────────────────────────────────────────────
+    # "mobilenetv3_large_100",
+    # "efficientnet_b0",
+    # "resnet18",
+    # "resnet50",
+    # "efficientnet_b3",
+    # "convnext_small",
+    # "mobilevit_s",
+    # "fastvit_t8",
+    # "tiny_vit_11m_224",
+    # "vit_small_patch16_224",
+    # "swin_tiny_patch4_window7_224",
+    # "vit_base_patch16_224",
+    # "efficientnet_b1",
+    # "efficientnet_b2",
+    # "mobilenetv3_small_100",
+    # "ghostnet_100",
+    # "resnet34",
+    # "densenet121",
+    # "convnext_tiny",
+    # "swin_s3_tiny_224",
+    # "xcit_small_12_p16_224",
+    # "vit_base_patch32_224",
+    # "densenet169"
+
     "mobilenetv3_large_100",
-    "efficientnet_b0",
-    "resnet18",
-    "resnet50",
     "efficientnet_b3",
-    "convnext_small",
-    "mobilevit_s",
-    "fastvit_t8",
-    "tiny_vit_11m_224",
-    "vit_small_patch16_224",
-    "swin_tiny_patch4_window7_224",
+    "resnet50",
+    "swin_base_patch4_window7_224",
+    "convformer_b36"
+    "convnext_base",
     "vit_base_patch16_224",
-    # ── leves ──────────────────────────────────────────────────────────────────
-    "efficientnet_b1",
-    "efficientnet_b2",
-    "mobilenetv3_small_100",
-    "ghostnet_100",
-    # ── médios ─────────────────────────────────────────────────────────────────
-    "resnet34",
-    "densenet121",
-    "convnext_tiny",
-    "swin_s3_tiny_224",
-    "xcit_small_12_p16_224",
-    "vit_base_patch32_224",
-    # ── médico: densenet169 com pesos ImageNet ─────────────────────────────────
-    "densenet169"
 ]
 
-# URL dos pesos RadImageNet (resnet50)
 RADIMAGENET_WEIGHTS_URL = (
     "https://huggingface.co/BMEII/RadImageNet/resolve/main/"
     "RadImageNet-ResNet50_notop.pth"
@@ -112,6 +124,21 @@ class SquarePad:
         return TF.pad(image, padding, 0, "constant")
 
 
+transform_train = v2.Compose([
+    SquarePad(),
+    v2.Resize((224, 224)),
+
+    v2.RandomRotation(degrees=360),
+
+    v2.RandomHorizontalFlip(p=0.5),
+    v2.RandomVerticalFlip(p=0.5),
+
+    v2.ToTensor(),
+    v2.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+
+    v2.RandomErasing(p=0.5, scale=(0.02, 0.15), ratio=(0.3, 3.3), value='random')
+])
+
 transform = transforms.Compose([
     SquarePad(),
     transforms.Resize((224, 224)),
@@ -123,7 +150,7 @@ transform = transforms.Compose([
 # DATASETS E DATALOADERS
 # =============================================================================
 
-dataset_train = datasets.ImageFolder(os.path.join(PASTA_RAIZ, "train"), transform=transform)
+dataset_train = datasets.ImageFolder(os.path.join(PASTA_RAIZ, "train"), transform=transform_train)
 dataset_val = datasets.ImageFolder(os.path.join(PASTA_RAIZ, "val"), transform=transform)
 dataset_test = datasets.ImageFolder(os.path.join(PASTA_RAIZ, "test"), transform=transform)
 
@@ -246,6 +273,10 @@ def save_plots(
 
     # 3. Curvas ROC multiclasse
     y_true_bin = label_binarize(y_true, classes=list(range(NUM_CLASSES)))
+
+    if NUM_CLASSES == 2:
+        y_true_bin = np.hstack((1 - y_true_bin, y_true_bin))
+
     fig, ax = plt.subplots(figsize=(8, 6))
     for i, class_name in enumerate(NOME_CLASSES):
         fpr, tpr, _ = roc_curve(y_true_bin[:, i], y_probs_matrix[:, i])
@@ -263,7 +294,10 @@ def save_plots(
     fig.savefig(os.path.join(out, "roc_auc_curve_val.png"))
     plt.close(fig)
 
-    macro_auc = roc_auc_score(y_true_bin, y_probs_matrix, multi_class="ovr", average="macro")
+    if NUM_CLASSES == 2:
+        macro_auc = roc_auc_score(y_true, y_probs_matrix[:, 1])
+    else:
+        macro_auc = roc_auc_score(y_true, y_probs_matrix, multi_class="ovr", average="macro")
 
     # 4. Matriz de confusão da Validação
     cm = confusion_matrix(y_true, y_preds)
@@ -279,6 +313,155 @@ def save_plots(
 
     return macro_auc
 
+
+# =============================================================================
+# PROJEÇÃO DO ESPAÇO LATENTE (UMAP)
+# =============================================================================
+
+def plot_latent_space(model, model_name, test_loader):
+    """Extrai embeddings do modelo e projeta em 2D usando UMAP."""
+    print(f"  🌌 Gerando projeção do Espaço Latente (UMAP) para {model_name}...")
+
+    model.eval()
+    features = []
+    labels_list = []
+
+    out_dir = os.path.join(PLOT_DIR, model_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    with torch.no_grad():
+        for inputs, labels in test_loader:
+            inputs = inputs.to(device)
+            # Tenta extrair as features antes da camada de classificação (timm models)
+            try:
+                feats = model.forward_features(inputs)
+                # Se for matriz (B, C, H, W), faz pooling espacial para virar vetor (B, C)
+                if feats.ndim == 4:
+                    feats = feats.mean(dim=[-2, -1])
+                    # Se for transformer (B, N, C), pega o token CLS ou faz média
+                elif feats.ndim == 3:
+                    feats = feats[:, 0]
+            except Exception:
+                # Fallback genérico: usa a saída final (logits)
+                feats = model(inputs)
+
+            features.append(feats.cpu().numpy())
+            labels_list.extend(labels.cpu().numpy())
+
+    features_np = np.vstack(features)
+    labels_np = np.array(labels_list)
+
+    # Executa o UMAP
+    reducer = umap.UMAP(random_state=42, n_neighbors=15, min_dist=0.1)
+    try:
+        embedding = reducer.fit_transform(features_np)
+    except Exception as e:
+        print(f"  ⚠️ Erro no UMAP para {model_name}: {e}")
+        return
+
+    # Plotagem
+    fig, ax = plt.subplots(figsize=(10, 8))
+    scatter = ax.scatter(embedding[:, 0], embedding[:, 1], c=labels_np, cmap="coolwarm", alpha=0.7, s=50,
+                         edgecolors='k')
+
+    # Cria a legenda usando os nomes reais das classes
+    handles, _ = scatter.legend_elements()
+    ax.legend(handles, NOME_CLASSES, title="Classes")
+
+    ax.set_title(f"Espaço Latente (UMAP) — {model_name}")
+    ax.set_xlabel("UMAP Dimensão 1")
+    ax.set_ylabel("UMAP Dimensão 2")
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, "umap_latent_space.png"), dpi=300)
+    plt.close(fig)
+
+# =============================================================================
+# GRAD-CAM (MAPA DE ATIVAÇÃO)
+# =============================================================================
+
+def get_target_layer_for_cam(model, model_name):
+    """Tenta encontrar a última camada de features para o Grad-CAM dinamicamente."""
+
+
+    if "mobilenetv3" in model_name:
+        return [model.blocks[-1]]
+
+    if "resnet" in model_name:
+        return [model.layer4[-1]]
+
+    if "densenet" in model_name:
+        return [model.features.norm5]
+
+    if "efficientnet" in model_name:
+        return [model.blocks[-1]]
+
+    if "convnext" in model_name:
+        return [model.stages[-1].blocks[-1]]
+
+    for name, module in reversed(list(model.named_modules())):
+        if isinstance(module, nn.Conv2d):
+            return [module]
+
+    return None
+
+
+def save_gradcam_samples(model, model_name, test_loader, num_samples=5):
+    """Pega amostras do teste e gera heatmaps mostrando onde o modelo focou."""
+    target_layers = get_target_layer_for_cam(model, model_name)
+
+    if not target_layers:
+        print(
+            f"  ⚠️  Grad-CAM pulado para {model_name}: não foi possível identificar a target layer de forma automática (comum em Transformers puros).")
+        return
+
+    out_dir = os.path.join(PLOT_DIR, model_name, "gradcam")
+    os.makedirs(out_dir, exist_ok=True)
+
+    try:
+        cam = GradCAM(model=model, target_layers=target_layers)
+    except Exception as e:
+        print(f"  ⚠️  Erro ao inicializar Grad-CAM para {model_name}: {e}")
+        return
+
+    model.eval()
+    inputs, labels = next(iter(test_loader))
+    inputs, labels = inputs.to(device), labels.to(device)
+    n = min(num_samples, inputs.size(0))
+
+    for i in range(n):
+        input_tensor = inputs[i].unsqueeze(0)
+        real_label = labels[i].item()
+
+        with torch.no_grad():
+            output = model(input_tensor)
+            pred_class = output.argmax(dim=1).item()
+
+        targets = [ClassifierOutputTarget(pred_class)]
+
+        try:
+            grayscale_cam = cam(input_tensor=input_tensor, targets=targets)[0, :]
+        except Exception:
+            continue
+
+        img_np = input_tensor[0].cpu().numpy().transpose(1, 2, 0)
+        mean, std = np.array([0.485, 0.456, 0.406]), np.array([0.229, 0.224, 0.225])
+        img_np = np.clip(std * img_np + mean, 0, 1)
+
+        cam_image = show_cam_on_image(img_np, grayscale_cam, use_rgb=True)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+        ax1.imshow(img_np)
+        ax1.set_title(f"Original (Real: {NOME_CLASSES[real_label]})")
+        ax1.axis('off')
+
+        cor_texto = "darkgreen" if real_label == pred_class else "darkred"
+        ax2.imshow(cam_image)
+        ax2.set_title(f"Grad-CAM (Pred: {NOME_CLASSES[pred_class]})", color=cor_texto, fontweight="bold")
+        ax2.axis('off')
+
+        fig.tight_layout()
+        fig.savefig(os.path.join(out_dir, f"sample_{i + 1}_cam.png"), bbox_inches='tight')
+        plt.close(fig)
 
 # =============================================================================
 # FACTORY DE MODELOS
@@ -329,10 +512,15 @@ def train_model(model_name: str) -> dict:
 
     history = {"train_loss": [], "val_loss": [], "train_acc": [], "val_acc": [], "f1_per_class": []}
 
+    train_time_acumulado = 0.0
+
     for epoch in range(NUM_EPOCHS):
         # ── Treino ────────────────────────────────────────────────────────────
         model.train()
         train_loss, train_correct = 0.0, 0
+
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+        start_train_epoch = time.time()
 
         for inputs, labels in tqdm(train_loader, desc=f"Treino E{epoch + 1:02}", leave=False):
             inputs, labels = inputs.to(device), labels.to(device)
@@ -345,6 +533,9 @@ def train_model(model_name: str) -> dict:
             train_loss += loss.item() * inputs.size(0)
             _, preds = torch.max(outputs, 1)
             train_correct += (preds == labels).sum().item()
+
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+        train_time_acumulado += (time.time() - start_train_epoch)
 
         # ── Validação ─────────────────────────────────────────────────────────
         model.eval()
@@ -399,6 +590,10 @@ def train_model(model_name: str) -> dict:
     # ── 1. Inferência no Teste ───────────────────────────────────────────────
     print(f"\n  🔍 Extraindo métricas finais do conjunto de TESTE...")
     test_preds, test_labels, test_probs = [], [], []
+
+    if torch.cuda.is_available(): torch.cuda.synchronize()
+    start_infer_time = time.time()
+
     with torch.no_grad():
         for inputs, labels in tqdm(test_loader, desc=f"Teste {model_name}", leave=False):
             inputs, labels = inputs.to(device), labels.to(device)
@@ -410,13 +605,18 @@ def train_model(model_name: str) -> dict:
             test_labels.extend(labels.cpu().numpy())
             test_probs.append(probs.cpu().numpy())
 
+    if torch.cuda.is_available(): torch.cuda.synchronize()
+    total_infer_time = time.time() - start_infer_time
+    infer_ms_per_img = (total_infer_time / len(dataset_test)) * 1000
+
     test_probs_matrix = np.vstack(test_probs)
     test_f1_classes = f1_score(test_labels, test_preds, average=None, zero_division=0)
     test_f1_macro = test_f1_classes.mean()
-    test_true_bin = label_binarize(test_labels, classes=list(range(NUM_CLASSES)))
-    test_auc_macro = roc_auc_score(test_true_bin, test_probs_matrix, multi_class="ovr", average="macro")
+    if NUM_CLASSES == 2:
+        test_auc_macro = roc_auc_score(test_labels, test_probs_matrix[:, 1])
+    else:
+        test_auc_macro = roc_auc_score(test_labels, test_probs_matrix, multi_class="ovr", average="macro")
 
-    # Salvar matriz de confusão exclusiva do Teste
     cm_test = confusion_matrix(test_labels, test_preds)
     fig, ax = plt.subplots(figsize=(max(6, NUM_CLASSES * 1.4), max(5, NUM_CLASSES * 1.2)))
     sns.heatmap(cm_test, annot=True, fmt="d", cmap="Greens", cbar=False,
@@ -427,6 +627,30 @@ def train_model(model_name: str) -> dict:
     fig.tight_layout()
     fig.savefig(os.path.join(PLOT_DIR, model_name, "confusion_matrix_test.png"))
     plt.close(fig)
+
+    # ==============================================================
+    # DISTRIBUIÇÃO DE CONFIANÇA E GRAD-CAM
+    # ==============================================================
+
+    test_confidences = np.max(test_probs_matrix, axis=1)
+    correct_mask = np.array(test_preds) == np.array(test_labels)
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.histplot(test_confidences[correct_mask], bins=20, color='green', label='Corretos', kde=True, alpha=0.6, ax=ax)
+    sns.histplot(test_confidences[~correct_mask], bins=20, color='red', label='Incorretos', kde=True, alpha=0.6, ax=ax)
+
+    ax.set_title(f"Distribuição de Confiança (Teste) — {model_name}")
+    ax.set_xlabel("Confiança (Probabilidade da Classe Majoritária)")
+    ax.set_ylabel("Frequência de Imagens")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(PLOT_DIR, model_name, "confidence_distribution.png"))
+    plt.close(fig)
+
+    print("  🎨 Gerando heatmaps do Grad-CAM...")
+    for param in model.parameters(): param.requires_grad = True
+    save_gradcam_samples(model, model_name, test_loader, num_samples=5)
+    for param in model.parameters(): param.requires_grad = False
 
     # ── 2. Inferência no Treino ──────────────────────────────────────────────
     print(f"  🔍 Extraindo métricas finais do conjunto de TREINO...")
@@ -445,12 +669,15 @@ def train_model(model_name: str) -> dict:
     train_probs_matrix = np.vstack(train_probs)
     train_f1_classes = f1_score(train_labels, train_preds, average=None, zero_division=0)
     train_f1_macro = train_f1_classes.mean()
-    train_true_bin = label_binarize(train_labels, classes=list(range(NUM_CLASSES)))
-    train_auc_macro = roc_auc_score(train_true_bin, train_probs_matrix, multi_class="ovr", average="macro")
+    if NUM_CLASSES == 2:
+        train_auc_macro = roc_auc_score(train_labels, train_probs_matrix[:, 1])
+    else:
+        train_auc_macro = roc_auc_score(train_labels, train_probs_matrix, multi_class="ovr", average="macro")
 
     print(f"  🏆 TESTE  | F1-Macro: {test_f1_macro:.4f} | AUC-Macro: {test_auc_macro:.4f}")
     print(f"  🏆 TREINO | F1-Macro: {train_f1_macro:.4f} | AUC-Macro: {train_auc_macro:.4f}")
-
+    # 3. UMAP
+    plot_latent_space(model, model_name, test_loader)
     del model
     gc.collect()
     torch.cuda.empty_cache()
@@ -462,8 +689,13 @@ def train_model(model_name: str) -> dict:
         "Val_F1-Macro": early_stopping.best_score,
         "Test_F1-Macro": test_f1_macro,
         "Test_AUC-Macro": test_auc_macro,
+        "Train_Time_s": train_time_acumulado,
+        "Inference_Time_s": total_infer_time,
+        "Inference_ms_per_img": infer_ms_per_img,
         "Parâmetros": num_params,
         "Batch": batch_size,
+        "test_preds": test_preds,
+        "test_labels": test_labels
     }
 
 
@@ -472,27 +704,92 @@ def train_model(model_name: str) -> dict:
 # =============================================================================
 
 if __name__ == "__main__":
-    # Treina apenas os modelos que estão na lista MODELOS (neste caso, só a SNN)
+    # Treina apenas os modelos que estão na lista MODELOS
     resultados_novos = [train_model(nome) for nome in MODELOS]
 
     df_novo = pd.DataFrame(resultados_novos)
     df_novo["Params_M"] = df_novo["Parâmetros"] / 1e6
 
+    # =========================================================================
+    # ACORDO INTER-MODELO E ANÁLISE DE ERROS (Usa os dados recém-treinados)
+    # =========================================================================
+    print("\n" + "=" * 85)
+    print("GERANDO ANÁLISE INTER-MODELO (Acordo e Significância)")
+    print("=" * 85)
+
+    preds_dict = {res["Modelo"]: res["test_preds"] for res in resultados_novos}
+    true_labels = np.array(resultados_novos[0]["test_labels"])
+    nomes_modelos = list(preds_dict.keys())
+
+    if len(nomes_modelos) >= 2:
+        acordo_matrix = np.zeros((len(nomes_modelos), len(nomes_modelos)))
+        for i, mod1 in enumerate(nomes_modelos):
+            for j, mod2 in enumerate(nomes_modelos):
+                p1 = np.array(preds_dict[mod1])
+                p2 = np.array(preds_dict[mod2])
+                acordo = np.mean(p1 == p2)
+                acordo_matrix[i, j] = acordo
+
+        fig, ax = plt.subplots(figsize=(10, 8))
+        sns.heatmap(acordo_matrix, annot=True, fmt=".2%", cmap="Purples",
+                    xticklabels=nomes_modelos, yticklabels=nomes_modelos, ax=ax)
+        ax.set_title("Matriz de Acordo Inter-Modelo (Predições Idênticas)")
+        fig.tight_layout()
+        fig.savefig(os.path.join(PLOT_DIR, "inter_model_agreement.png"), dpi=300)
+        plt.close(fig)
+
+        print("\n📊 Teste Estatístico de McNemar (Top 1 vs Outros):")
+        top_model = df_novo.sort_values("Test_F1-Macro", ascending=False).iloc[0]["Modelo"]
+        p1 = np.array(preds_dict[top_model])
+
+        for mod2 in nomes_modelos:
+            if mod2 == top_model: continue
+            p2 = np.array(preds_dict[mod2])
+
+            ambos_acertam = np.sum((p1 == true_labels) & (p2 == true_labels))
+            p1_acerta_p2_erra = np.sum((p1 == true_labels) & (p2 != true_labels))
+            p1_erra_p2_acerta = np.sum((p1 != true_labels) & (p2 == true_labels))
+            ambos_erram = np.sum((p1 != true_labels) & (p2 != true_labels))
+
+            table = [[ambos_acertam, p1_acerta_p2_erra],
+                     [p1_erra_p2_acerta, ambos_erram]]
+
+            result = mcnemar(table, exact=True)
+            alpha = 0.05
+            if result.pvalue < alpha:
+                print(f"  ✅ {top_model} vs {mod2}: Diferença SIGNIFICATIVA (p={result.pvalue:.4f})")
+            else:
+                print(f"  ⚖️  {top_model} vs {mod2}: Empate Estatístico (p={result.pvalue:.4f})")
+
+        # 3. IMAGENS DIFÍCEIS (Erros Consensuais)
+        todas_preds = np.array([preds_dict[m] for m in nomes_modelos])
+        acertos = (todas_preds == true_labels)
+        erros_totais_idx = np.where(np.sum(acertos, axis=0) == 0)[0]
+
+        print(f"\n🔥 Análise de Falha Genuína:")
+        print(f"  Ocorreram {len(erros_totais_idx)} imagens de teste que TODOS os modelos erraram.")
+        if len(erros_totais_idx) > 0:
+            print("  Índices dessas imagens no Dataset de Teste:", erros_totais_idx)
+
+    # =========================================================================
+    # SALVAR CSV E GERAR GRÁFICOS GLOBAIS
+    # =========================================================================
+
+    df_novo_limpo = df_novo.drop(columns=["test_preds", "test_labels"])
+
     csv_path = os.path.join(PLOT_DIR, "benchmark_results_test_train.csv")
 
-    # Se o CSV antigo já existir, nós unimos os dados
     if os.path.exists(csv_path):
         print(f"\nAtualizando o arquivo existente: {csv_path}")
         df_antigo = pd.read_csv(csv_path)
 
-        # Remove o modelo atual caso ele já esteja no CSV (evita duplicatas se você rodar 2 vezes)
-        modelos_treinados_agora = df_novo["Modelo"].tolist()
+        # Remove modelos que acabaram de ser treinados para evitar duplicatas
+        modelos_treinados_agora = df_novo_limpo["Modelo"].tolist()
         df_antigo = df_antigo[~df_antigo["Modelo"].isin(modelos_treinados_agora)]
 
-        # Junta o resultado antigo com o novo
-        df_final = pd.concat([df_antigo, df_novo], ignore_index=True)
+        df_final = pd.concat([df_antigo, df_novo_limpo], ignore_index=True)
     else:
-        df_final = df_novo
+        df_final = df_novo_limpo
 
     # Ranking final baseado no Teste atualizado
     df_final = df_final.sort_values("Test_F1-Macro", ascending=False)
@@ -522,6 +819,45 @@ if __name__ == "__main__":
     ax.set_xlabel("Parâmetros (M)")
     fig.tight_layout()
     fig.savefig(os.path.join(PLOT_DIR, "eficiencia_test.png"), dpi=300)
+    plt.close(fig)
+
+    # ── Trade-off: Velocidade vs F1 (Teste) ───────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(12, 8))
+    sns.scatterplot(data=df_final, x="Inference_ms_per_img", y="Test_F1-Macro",
+                    size="Params_M", sizes=(50, 800), hue="Modelo",
+                    alpha=0.7, palette="tab20", legend=False, ax=ax)
+    for _, row in df_final.iterrows():
+        ax.text(row["Inference_ms_per_img"] * 1.02, row["Test_F1-Macro"], row["Modelo"], fontsize=9)
+    ax.set_title("Trade-off de Produção: Velocidade vs F1 (Bolhas = Tamanho do Modelo)")
+    ax.set_xlabel("Tempo de Inferência por Imagem (ms)")
+    ax.set_ylabel("F1-Score Macro (Teste)")
+    ax.grid(True, linestyle="--", alpha=0.5)
+    fig.tight_layout()
+    fig.savefig(os.path.join(PLOT_DIR, "velocidade_vs_performance.png"), dpi=300)
+    plt.close(fig)
+
+    # ── Análise de Overfitting: F1 Treino vs Teste ────────────────────────────────
+    df_melted = df_final.melt(id_vars=["Modelo"],
+                              value_vars=["Train_F1-Macro", "Test_F1-Macro"],
+                              var_name="Conjunto", value_name="F1-Score")
+    fig, ax = plt.subplots(figsize=(12, 10))
+    sns.barplot(data=df_melted, x="F1-Score", y="Modelo", hue="Conjunto", palette="Set1", ax=ax)
+    ax.set_title("Análise de Overfitting (Treino vs Teste)")
+    ax.set_xlabel("F1-Score Macro")
+    ax.set_xlim(0, 1.05)
+    fig.tight_layout()
+    fig.savefig(os.path.join(PLOT_DIR, "overfitting_analysis.png"), dpi=300)
+    plt.close(fig)
+
+    # ── Tempo Total de Treinamento ────────────────────────────────────────────────
+    df_final["Train_Time_min"] = df_final["Train_Time_s"] / 60.0
+    df_final_sorted_time = df_final.sort_values("Train_Time_min", ascending=False)
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.barplot(data=df_final_sorted_time, x="Train_Time_min", y="Modelo", palette="rocket", ax=ax)
+    ax.set_title("Custo de Treinamento: Tempo Acumulado na GPU")
+    ax.set_xlabel("Tempo de Treino (Minutos)")
+    fig.tight_layout()
+    fig.savefig(os.path.join(PLOT_DIR, "tempo_treinamento.png"), dpi=300)
     plt.close(fig)
 
     print(f"\nTreino e atualização concluídos. Relatórios atualizados salvos em: {PLOT_DIR}/")
