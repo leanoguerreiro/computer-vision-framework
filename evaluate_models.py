@@ -1,6 +1,7 @@
 import os
 import gc
 import random
+import time
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -21,25 +22,33 @@ load_dotenv()
 # =============================================================================
 # CONFIGURAÇÃO GLOBAL
 # =============================================================================
-
-PASTA_RAIZ = "mri_split_70_20_10"
-RESULTS_DIR = "results"
-ROBUSTNESS_DIR = "robustness_analysis"
-BATCH_SIZE = 32
+INPUT_DIR = "datasets"
+PASTA_RAIZ = f"{INPUT_DIR}/casting_split_70_20_10"
+RESULTS_DIR = f"results/{os.path.basename(PASTA_RAIZ)}"
+ROBUSTNESS_DIR = f"robustness_analysis/{os.path.basename(PASTA_RAIZ)}"
+BATCH_SIZE = 16
 
 MODELOS = [
-    # ── originais ──────────────────────────────────────────────────────────────
-    "mobilenetv3_large_100", "efficientnet_b0", "resnet18", "resnet50",
-    "efficientnet_b3", "convnext_small", "mobilevit_s", "fastvit_t8",
-    "tiny_vit_11m_224", "vit_small_patch16_224", "swin_tiny_patch4_window7_224",
+    # # ── originais ──────────────────────────────────────────────────────────────
+    # "mobilenetv3_large_100", "efficientnet_b0", "resnet18", "resnet50",
+    # "efficientnet_b3", "convnext_small", "mobilevit_s", "fastvit_t8",
+    # "tiny_vit_11m_224", "vit_small_patch16_224", "swin_tiny_patch4_window7_224",
+    # "vit_base_patch16_224",
+    # # ── leves ──────────────────────────────────────────────────────────────────
+    # "efficientnet_b1", "efficientnet_b2", "mobilenetv3_small_100", "ghostnet_100",
+    # # ── médios ─────────────────────────────────────────────────────────────────
+    # "resnet34", "densenet121", "convnext_tiny", "swin_s3_tiny_224",
+    # "xcit_small_12_p16_224", "vit_base_patch32_224",
+    # # ── médico ─────────────────────────────────────────────────────────────────
+    # "densenet169"
+
+    "mobilenetv3_large_100",
+    "efficientnet_b3",
+    "resnet50",
+    "convnext_base",
     "vit_base_patch16_224",
-    # ── leves ──────────────────────────────────────────────────────────────────
-    "efficientnet_b1", "efficientnet_b2", "mobilenetv3_small_100", "ghostnet_100",
-    # ── médios ─────────────────────────────────────────────────────────────────
-    "resnet34", "densenet121", "convnext_tiny", "swin_s3_tiny_224",
-    "xcit_small_12_p16_224", "vit_base_patch32_224",
-    # ── médico ─────────────────────────────────────────────────────────────────
-    "densenet169"
+    "swin_base_patch4_window7_224",
+    "convformer_b36"
 ]
 
 os.makedirs(ROBUSTNESS_DIR, exist_ok=True)
@@ -66,11 +75,13 @@ set_seed(42)
 
 class AdjustContrast:
     """Classe serializável para ajustar o contraste (substitui o lambda)."""
+
     def __init__(self, factor):
         self.factor = factor
 
     def __call__(self, img):
         return TF.adjust_contrast(img, self.factor)
+
 
 class SquarePad:
     """Adiciona padding para tornar a imagem quadrada antes do resize."""
@@ -140,15 +151,15 @@ perturbation_transforms = {
 
     # ── CONTRASTE (Simula calibração deficiente da máquina MRI) ──────────────
     "Contrast_Leve": transforms.Compose(base_transforms + [
-        AdjustContrast(0.6),  # Substituiu o lambda!
+        AdjustContrast(0.6),
         transforms.ToTensor(), normalize
     ]),
     "Contrast_Moderada": transforms.Compose(base_transforms + [
-        AdjustContrast(0.3),  # Substituiu o lambda!
+        AdjustContrast(0.3),
         transforms.ToTensor(), normalize
     ]),
     "Contrast_Extrema": transforms.Compose(base_transforms + [
-        AdjustContrast(0.1),  # Substituiu o lambda!
+        AdjustContrast(0.1),
         transforms.ToTensor(), normalize
     ])
 }
@@ -199,6 +210,9 @@ def evaluate_model(model_name: str) -> dict:
     for pert_name, loader in test_loaders.items():
         preds_list, labels_list, probs_list = [], [], []
 
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+        start_infer = time.time()
+
         with torch.no_grad():
             for inputs, labels in tqdm(loader, desc=f"Inferência [{pert_name.ljust(15)}]", leave=False):
                 inputs, labels = inputs.to(device), labels.to(device)
@@ -210,16 +224,26 @@ def evaluate_model(model_name: str) -> dict:
                 labels_list.extend(labels.cpu().numpy())
                 probs_list.append(probs.cpu().numpy())
 
+        if torch.cuda.is_available(): torch.cuda.synchronize()
+        total_infer_time = time.time() - start_infer
+
+        infer_ms_per_img = (total_infer_time / len(loader.dataset)) * 1000
+
         probs_matrix = np.vstack(probs_list)
         f1_macro = f1_score(labels_list, preds_list, average="macro", zero_division=0)
 
-        true_bin = label_binarize(labels_list, classes=list(range(NUM_CLASSES)))
-        auc_macro = roc_auc_score(true_bin, probs_matrix, multi_class="ovr", average="macro")
+        if NUM_CLASSES == 2:
+            auc_macro = roc_auc_score(labels_list, probs_matrix[:, 1])
+        else:
+            true_bin = label_binarize(labels_list, classes=list(range(NUM_CLASSES)))
+            auc_macro = roc_auc_score(true_bin, probs_matrix, multi_class="ovr", average="macro")
 
         resultados_modelo[f"F1_{pert_name}"] = f1_macro
         resultados_modelo[f"AUC_{pert_name}"] = auc_macro
+        resultados_modelo[f"Time_ms_img_{pert_name}"] = infer_ms_per_img
 
-        print(f"  ➔ {pert_name.ljust(17)}: F1-Macro = {f1_macro:.4f} | AUC-Macro = {auc_macro:.4f}")
+        print(
+            f"  ➔ {pert_name.ljust(17)}: F1-Macro = {f1_macro:.4f} | AUC-Macro = {auc_macro:.4f} | Tempo/img = {infer_ms_per_img:.2f} ms")
 
     del model
     gc.collect()
@@ -290,7 +314,11 @@ if __name__ == "__main__":
     print("RESUMO EXECUTIVO SALVO EM CSV")
     print("=" * 80)
 
-    # Gerando os 3 gráficos separados para legibilidade
+    colunas_exibicao = ["Modelo", "F1_Clean", "AUC_Clean", "Time_ms_img_Clean"]
+    if all(col in df.columns for col in colunas_exibicao):
+        print(df[colunas_exibicao].to_string(index=False))
+
+
     plot_robustness_group(df, "F1_Clean", "Noise", "Queda de Performance por Adição de Ruído", "robustness_noise.png")
     plot_robustness_group(df, "F1_Clean", "Blur", "Queda de Performance por Desfoque (Blur)", "robustness_blur.png")
     plot_robustness_group(df, "F1_Clean", "Contrast", "Queda de Performance por Redução de Contraste",
