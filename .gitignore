@@ -1,6 +1,8 @@
 .env
 
 
-mri_split_70_20_10/
+*.jpg
+*.png
+*.jpeg
 *.pth
 *.lock
