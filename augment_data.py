@@ -91,5 +91,5 @@ def balancear_dataset_treino(pasta_train, seed=42):
 
 
 if __name__ == "__main__":
-    PASTA_TREINO = "terrain_split_70_20_10/train"
+    PASTA_TREINO = "mri_split_70_20_10/train"
     balancear_dataset_treino(PASTA_TREINO)
