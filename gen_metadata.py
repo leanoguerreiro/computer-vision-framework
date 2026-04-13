@@ -78,6 +78,8 @@ def gerar_metadata(diretorio_raiz, output_csv="dataset_metadata.csv", output_jso
 
 if __name__ == "__main__":
     # Aponte para a raiz do seu dataset (a pasta que contém train, val, test)
-    RAIZ_DATASET = "terrain_split_70_20_10"
+    RAIZ_DATASET = "datasets/mri_split_70_20_10"
+    OUTPUT_CSV = f"{RAIZ_DATASET}/dataset_metadata.csv"
+    OUTPUT_JSON = f"{RAIZ_DATASET}/dataset_summary.json"
 
-    gerar_metadata(RAIZ_DATASET)
+    gerar_metadata(RAIZ_DATASET, output_csv=OUTPUT_CSV, output_json=OUTPUT_JSON)
