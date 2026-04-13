@@ -70,11 +70,11 @@ MODELOS = [
     # "vit_base_patch32_224",
     # "densenet169"
 
-    "mobilenetv3_large_100",
-    "efficientnet_b3",
-    "resnet50",
-    "swin_base_patch4_window7_224",
-    "convformer_b36"
+    # "mobilenetv3_large_100",
+    # "efficientnet_b3",
+    # "resnet50",
+    # "swin_base_patch4_window7_224",
+    # "convformer_b36",
     "convnext_base",
     "vit_base_patch16_224",
 ]
@@ -705,7 +705,25 @@ def train_model(model_name: str) -> dict:
 
 if __name__ == "__main__":
     # Treina apenas os modelos que estão na lista MODELOS
-    resultados_novos = [train_model(nome) for nome in MODELOS]
+    resultados_novos = []
+
+    for nome in MODELOS:
+        try:
+            resultado = train_model(nome)
+            resultados_novos.append(resultado)
+        except Exception as e:
+            print(f"\n❌ ERRO CRÍTICO ao treinar o modelo '{nome}': {e}")
+            print(f"PULANDO '{nome}' e limpando a memória para o próximo modelo...\n")
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            continue
+
+    # Verificação de segurança: se todos os modelos falharem, encerra o script sem quebrar as análises
+    if not resultados_novos:
+        print("\n⚠️ Nenhum modelo foi treinado com sucesso. Encerrando o script.")
+        exit()
 
     df_novo = pd.DataFrame(resultados_novos)
     df_novo["Params_M"] = df_novo["Parâmetros"] / 1e6
