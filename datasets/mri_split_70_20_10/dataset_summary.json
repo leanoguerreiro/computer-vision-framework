@@ -1,0 +1,29 @@
+{
+    "train": {
+        "total_imagens": 5600,
+        "classes": {
+            "glioma": 1400,
+            "healthy": 1400,
+            "meningioma": 1400,
+            "pituitary": 1400
+        }
+    },
+    "val": {
+        "total_imagens": 1404,
+        "classes": {
+            "glioma": 324,
+            "healthy": 399,
+            "meningioma": 329,
+            "pituitary": 352
+        }
+    },
+    "test": {
+        "total_imagens": 705,
+        "classes": {
+            "glioma": 163,
+            "healthy": 201,
+            "meningioma": 165,
+            "pituitary": 176
+        }
+    }
+}

@@ -1,0 +1,23 @@
+{
+    "train": {
+        "total_imagens": 1092,
+        "classes": {
+            "def_front": 546,
+            "ok_front": 546
+        }
+    },
+    "val": {
+        "total_imagens": 260,
+        "classes": {
+            "def_front": 156,
+            "ok_front": 104
+        }
+    },
+    "test": {
+        "total_imagens": 131,
+        "classes": {
+            "def_front": 79,
+            "ok_front": 52
+        }
+    }
+}
