@@ -31,18 +31,18 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # CONFIGURAÇÃO GLOBAL
 # =============================================================================
 INPUT_DIR = "datasets"
-PASTA_RAIZ = f"{INPUT_DIR}/mri_split_70_20_10"
+PASTA_RAIZ = f"{INPUT_DIR}/terrain_split_70_20_10"
 PLOT_DIR = f"plots/{os.path.basename(PASTA_RAIZ)}"
 RESULTS_DIR = f"results/{os.path.basename(PASTA_RAIZ)}"
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 NUM_EPOCHS = 50
-LR = 1e-4
+LR = 1e-3
 ES_PATIENCE = 5
 ES_MIN_DELTA = 0.001
 
 BATCH_SIZE_OVERRIDE = {
-    "convnext_base": 16,
-    "efficientnetv2_m": 16,
+    "convnext_base": 32,
+    "efficientnetv2_m": 32,
 }
 
 MODELOS = [
@@ -70,13 +70,25 @@ MODELOS = [
     # "vit_base_patch32_224",
     # "densenet169"
 
-    # "mobilenetv3_large_100",
-    # "efficientnet_b3",
-    # "resnet50",
-    # "swin_base_patch4_window7_224",
-    # "convformer_b36",
-    "convnext_base",
+    # 🔹 Leves
+    "mobilenetv3_large_100",
+    "mobilevit_s",
+
+    # 🔹 Médios
+    "resnet50",
+    "convformer_s18",
+
+    # 🔹 Médio-alto
+    "efficientnet_b3",
+    "maxvit_tiny_tf_224",
+
+    # 🔹 Transformers (ajustados)
+    "swin_tiny_patch4_window7_224",
     "vit_base_patch16_224",
+
+    # 🔹 Alto
+    "convnext_base",
+    "swin_base_patch4_window7_224",
 ]
 
 RADIMAGENET_WEIGHTS_URL = (
@@ -132,6 +144,7 @@ transform_train = v2.Compose([
 
     v2.RandomHorizontalFlip(p=0.5),
     v2.RandomVerticalFlip(p=0.5),
+    v2.Grayscale(num_output_channels=3),
 
     v2.ToTensor(),
     v2.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
@@ -505,7 +518,14 @@ def train_model(model_name: str) -> dict:
     model = build_model(model_name).to(device)
     criterion = build_criterion()
     optimizer = optim.Adam(model.parameters(), lr=LR)
-    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
+    steps_per_epoch = len(train_loader)
+    scheduler = lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=LR,  # O LR definido no topo do arquivo será o pico máximo
+        steps_per_epoch=steps_per_epoch,
+        epochs=NUM_EPOCHS,
+        pct_start=0.3  # Gasta 30% do treino subindo o LR, e 70% descendo
+    )
 
     best_weights_path = os.path.join(model_dir, "best.pth")
     early_stopping = EarlyStopping(patience=ES_PATIENCE, min_delta=ES_MIN_DELTA, path=best_weights_path)
@@ -529,6 +549,7 @@ def train_model(model_name: str) -> dict:
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
+            scheduler.step()
 
             train_loss += loss.item() * inputs.size(0)
             _, preds = torch.max(outputs, 1)
@@ -567,9 +588,9 @@ def train_model(model_name: str) -> dict:
         history["val_acc"].append(val_correct / len(dataset_val))
         history["f1_per_class"].append(epoch_f1_classes.tolist())
 
-        scheduler.step(epoch_val_loss)
-
-        print(f"E{epoch + 1:02} | Val Loss: {epoch_val_loss:.4f} | Val F1-Macro: {epoch_f1_macro:.4f}")
+        current_lr = optimizer.param_groups[0]['lr']
+        print(
+            f"E{epoch + 1:02} | LR: {current_lr:.6f} | Val Loss: {epoch_val_loss:.4f} | Val F1-Macro: {epoch_f1_macro:.4f}")
 
         epoch_data = {"y_true": all_labels, "y_probs": np.vstack(all_probs), "y_preds": all_preds}
         if early_stopping.step(epoch_f1_macro, model, epoch_data):
