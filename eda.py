@@ -150,7 +150,7 @@ def exibir_amostras(dataset_path, classes, target_split='train'):
 
 if __name__ == "__main__":
     # Substitua pelo caminho do seu dataset atual
-    caminho_do_dataset = "terrain_split_70_20_10"  # Pode ser o mri_split_70_20_10 também!
+    caminho_do_dataset = "datasets/terrain_split_70_20_10"  # Pode ser o mri_split_70_20_10 também!
 
     df_meta = realizar_eda(caminho_do_dataset)
 
