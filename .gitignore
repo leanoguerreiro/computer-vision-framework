@@ -1,8 +1,8 @@
 .env
 
 
-*.jpg
-*.png
-*.jpeg
+datasets/*/train
+datasets/*/val
+datasets/*/test
 *.pth
 *.lock
