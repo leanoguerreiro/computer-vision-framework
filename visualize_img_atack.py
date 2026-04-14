@@ -9,9 +9,9 @@ import torchvision.transforms.functional as TF
 # =============================================================================
 # CONFIGURAÇÃO
 # =============================================================================
-
-PASTA_RAIZ = "mri_split_70_20_10"
-ROBUSTNESS_DIR = "robustness_analysis"
+INPUT_DIR = 'datasets'
+PASTA_RAIZ = f"{INPUT_DIR}/mri_split_70_20_10"
+ROBUSTNESS_DIR = f"robustness_analysis/{os.path.basename(PASTA_RAIZ)}"
 
 os.makedirs(ROBUSTNESS_DIR, exist_ok=True)
 
