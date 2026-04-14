@@ -75,35 +75,44 @@ def testar_limites_vram(lista_modelos, batch_size=32, image_size=224):
 if __name__ == "__main__":
     # A sua lista de arquiteturas
     modelos_candidatos = [
-    # ── originais ──────────────────────────────────────────────────────────────
+    # # ── originais ──────────────────────────────────────────────────────────────
+    # "mobilenetv3_large_100",
+    # "efficientnet_b0",
+    # "resnet18",
+    # "resnet50",
+    # "efficientnet_b3",
+    # "convnext_small",
+    # "mobilevit_s",
+    # "fastvit_t8",
+    # "tiny_vit_11m_224",
+    # "vit_small_patch16_224",
+    # "swin_tiny_patch4_window7_224",
+    # "vit_base_patch16_224",
+    # # ── leves ──────────────────────────────────────────────────────────────────
+    # "efficientnet_b1",
+    # "efficientnet_b2",
+    # "mobilenetv3_small_100",
+    # "ghostnet_100",
+    # # ── médios ─────────────────────────────────────────────────────────────────
+    # "resnet34",
+    # "densenet121",
+    # "convnext_tiny",
+    # "swin_s3_tiny_224",
+    # "xcit_small_12_p16_224",
+    # "vit_base_patch32_224",
+    # # ── médico: densenet169 com pesos ImageNet ─────────────────────────────────
+    # "densenet169",
+    # "convnext_base",
+    # "efficientnetv2_m"
     "mobilenetv3_large_100",
-    "efficientnet_b0",
-    "resnet18",
-    "resnet50",
-    "efficientnet_b3",
-    "convnext_small",
     "mobilevit_s",
-    "fastvit_t8",
-    "tiny_vit_11m_224",
-    "vit_small_patch16_224",
-    "swin_tiny_patch4_window7_224",
-    "vit_base_patch16_224",
-    # ── leves ──────────────────────────────────────────────────────────────────
-    "efficientnet_b1",
-    "efficientnet_b2",
-    "mobilenetv3_small_100",
-    "ghostnet_100",
-    # ── médios ─────────────────────────────────────────────────────────────────
-    "resnet34",
-    "densenet121",
-    "convnext_tiny",
-    "swin_s3_tiny_224",
-    "xcit_small_12_p16_224",
-    "vit_base_patch32_224",
-    # ── médico: densenet169 com pesos ImageNet ─────────────────────────────────
-    "densenet169",
+    "efficientnet_b3",
+    "resnet50",
+    "swin_base_patch4_window7_224",
+    "convformer_s18",
     "convnext_base",
-    "efficientnetv2_m"
+    "vit_base_patch16_224",
+    "maxvit_tiny_tf_224"
 ]
 
     # Você pode alterar o batch_size aqui para testar o limite da RTX 3060
