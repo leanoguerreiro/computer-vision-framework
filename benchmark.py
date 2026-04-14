@@ -411,6 +411,9 @@ def get_target_layer_for_cam(model, model_name):
     if "convnext" in model_name:
         return [model.stages[-1].blocks[-1]]
 
+    if "convformer" in model_name:
+        return [model.stages[-1].blocks[-1]]
+
     for name, module in reversed(list(model.named_modules())):
         if isinstance(module, nn.Conv2d):
             return [module]
