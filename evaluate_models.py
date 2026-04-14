@@ -23,7 +23,7 @@ load_dotenv()
 # CONFIGURAÇÃO GLOBAL
 # =============================================================================
 INPUT_DIR = "datasets"
-PASTA_RAIZ = f"{INPUT_DIR}/casting_split_70_20_10"
+PASTA_RAIZ = f"{INPUT_DIR}/terrain_split_70_20_10"
 RESULTS_DIR = f"results/{os.path.basename(PASTA_RAIZ)}"
 ROBUSTNESS_DIR = f"robustness_analysis/{os.path.basename(PASTA_RAIZ)}"
 BATCH_SIZE = 16
@@ -42,13 +42,25 @@ MODELOS = [
     # # ── médico ─────────────────────────────────────────────────────────────────
     # "densenet169"
 
+    # 🔹 Leves
     "mobilenetv3_large_100",
-    "efficientnet_b3",
+    "mobilevit_s",
+
+    # 🔹 Médios
     "resnet50",
-    "convnext_base",
+    "convformer_s18",
+
+    # 🔹 Médio-alto
+    "efficientnet_b3",
+    "maxvit_tiny_tf_224",
+
+    # 🔹 Transformers (ajustados)
+    "swin_tiny_patch4_window7_224",
     "vit_base_patch16_224",
+
+    # 🔹 Alto
+    "convnext_base",
     "swin_base_patch4_window7_224",
-    "convformer_b36"
 ]
 
 os.makedirs(ROBUSTNESS_DIR, exist_ok=True)
