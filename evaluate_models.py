@@ -1,180 +1,52 @@
 import os
 import gc
-import random
 import time
+from pathlib import Path
+from typing import Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
 import torch.nn as nn
-import timm
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-import torchvision.transforms.functional as TF
+from torchvision import datasets
 from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.preprocessing import label_binarize
 from tqdm import tqdm
 from dotenv import load_dotenv
+from config import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_SEED,
+    ROBUSTNESS_CSV_PATH,
+    ROBUSTNESS_DATASET_ROOT,
+    ROBUSTNESS_MODELS,
+    ROBUSTNESS_PLOT_DIR,
+    ROBUSTNESS_RESULTS_DIR,
+)
+from cv_framework.models import build_model as build_shared_model
+from cv_framework.reproducibility import set_seed
+from cv_framework.transforms import build_perturbation_transforms
 
 load_dotenv()
 
 # =============================================================================
 # CONFIGURAÇÃO GLOBAL
 # =============================================================================
-INPUT_DIR = "datasets"
-PASTA_RAIZ = f"{INPUT_DIR}/terrain_split_70_20_10"
-RESULTS_DIR = f"results/{os.path.basename(PASTA_RAIZ)}"
-ROBUSTNESS_DIR = f"robustness_analysis/{os.path.basename(PASTA_RAIZ)}"
-BATCH_SIZE = 16
+PASTA_RAIZ = str(ROBUSTNESS_DATASET_ROOT)
+RESULTS_DIR = str(ROBUSTNESS_RESULTS_DIR)
+ROBUSTNESS_DIR = str(ROBUSTNESS_PLOT_DIR)
+BATCH_SIZE = DEFAULT_BATCH_SIZE
+MODELOS = list(ROBUSTNESS_MODELS)
 
-MODELOS = [
-    # # ── originais ──────────────────────────────────────────────────────────────
-    # "mobilenetv3_large_100", "efficientnet_b0", "resnet18", "resnet50",
-    # "efficientnet_b3", "convnext_small", "mobilevit_s", "fastvit_t8",
-    # "tiny_vit_11m_224", "vit_small_patch16_224", "swin_tiny_patch4_window7_224",
-    # "vit_base_patch16_224",
-    # # ── leves ──────────────────────────────────────────────────────────────────
-    # "efficientnet_b1", "efficientnet_b2", "mobilenetv3_small_100", "ghostnet_100",
-    # # ── médios ─────────────────────────────────────────────────────────────────
-    # "resnet34", "densenet121", "convnext_tiny", "swin_s3_tiny_224",
-    # "xcit_small_12_p16_224", "vit_base_patch32_224",
-    # # ── médico ─────────────────────────────────────────────────────────────────
-    # "densenet169"
-
-    # 🔹 Leves
-    "mobilenetv3_large_100",
-    "mobilevit_s",
-
-    # 🔹 Médios
-    "resnet50",
-    "convformer_s18",
-
-    # 🔹 Médio-alto
-    "efficientnet_b3",
-    "maxvit_tiny_tf_224",
-
-    # 🔹 Transformers (ajustados)
-    "swin_tiny_patch4_window7_224",
-    "vit_base_patch16_224",
-
-    # 🔹 Alto
-    "convnext_base",
-    "swin_base_patch4_window7_224",
-]
-
-os.makedirs(ROBUSTNESS_DIR, exist_ok=True)
+Path(ROBUSTNESS_DIR).mkdir(parents=True, exist_ok=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def set_seed(seed: int = 42) -> None:
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+set_seed(DEFAULT_SEED)
 
 
-set_seed(42)
-
-
-# =============================================================================
-# CLASSES DE TRANSFORMAÇÃO E PERTURBAÇÃO
-# =============================================================================
-
-class AdjustContrast:
-    """Classe serializável para ajustar o contraste (substitui o lambda)."""
-
-    def __init__(self, factor):
-        self.factor = factor
-
-    def __call__(self, img):
-        return TF.adjust_contrast(img, self.factor)
-
-
-class SquarePad:
-    """Adiciona padding para tornar a imagem quadrada antes do resize."""
-
-    def __call__(self, image):
-        w, h = image.size
-        max_wh = max(w, h)
-        hp = int((max_wh - w) // 2)
-        vp = int((max_wh - h) // 2)
-        padding = [hp, vp, int(max_wh - w - hp), int(max_wh - h - vp)]
-        return TF.pad(image, padding, 0, "constant")
-
-
-class AddGaussianNoise(object):
-    """Adiciona ruído gaussiano determinístico."""
-
-    def __init__(self, mean=0., std=0.1):
-        self.std = std
-        self.mean = mean
-
-    def __call__(self, tensor):
-        # Semente fixada via dataloader (worker_init_fn ou estado global)
-        # garante reprodutibilidade no teste.
-        noise = torch.randn(tensor.size()) * self.std + self.mean
-        return torch.clamp(tensor + noise, 0., 1.)
-
-
-# Transformações base para todas as imagens
-base_transforms = [
-    SquarePad(),
-    transforms.Resize((224, 224)),
-]
-
-# Normalização padrão da ImageNet
-normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-
-# Dicionário com 3 níveis para cada tipo de perturbação
-perturbation_transforms = {
-    "Clean": transforms.Compose(base_transforms + [
-        transforms.ToTensor(), normalize
-    ]),
-
-    # ── RUÍDO (Simula artefatos de sensor/aquisição) ─────────────────────────
-    "Noise_Leve": transforms.Compose(base_transforms + [
-        transforms.ToTensor(), AddGaussianNoise(std=0.05), normalize
-    ]),
-    "Noise_Moderada": transforms.Compose(base_transforms + [
-        transforms.ToTensor(), AddGaussianNoise(std=0.15), normalize
-    ]),
-    "Noise_Extrema": transforms.Compose(base_transforms + [
-        transforms.ToTensor(), AddGaussianNoise(std=0.30), normalize
-    ]),
-
-    # ── DESFOQUE (Simula movimento do paciente/baixa resolução) ──────────────
-    "Blur_Leve": transforms.Compose(base_transforms + [
-        transforms.GaussianBlur(kernel_size=3, sigma=1.0),
-        transforms.ToTensor(), normalize
-    ]),
-    "Blur_Moderada": transforms.Compose(base_transforms + [
-        transforms.GaussianBlur(kernel_size=5, sigma=2.0),
-        transforms.ToTensor(), normalize
-    ]),
-    "Blur_Extrema": transforms.Compose(base_transforms + [
-        transforms.GaussianBlur(kernel_size=9, sigma=4.0),
-        transforms.ToTensor(), normalize
-    ]),
-
-    # ── CONTRASTE (Simula calibração deficiente da máquina MRI) ──────────────
-    "Contrast_Leve": transforms.Compose(base_transforms + [
-        AdjustContrast(0.6),
-        transforms.ToTensor(), normalize
-    ]),
-    "Contrast_Moderada": transforms.Compose(base_transforms + [
-        AdjustContrast(0.3),
-        transforms.ToTensor(), normalize
-    ]),
-    "Contrast_Extrema": transforms.Compose(base_transforms + [
-        AdjustContrast(0.1),
-        transforms.ToTensor(), normalize
-    ])
-}
+perturbation_transforms = build_perturbation_transforms()
 
 # =============================================================================
 # PREPARAÇÃO DOS DATALOADERS
@@ -201,10 +73,10 @@ for pert_name, trans in perturbation_transforms.items():
 
 def build_model(model_name: str) -> nn.Module:
     """Cria a arquitetura base do modelo sem pesos pré-treinados iniciais."""
-    return timm.create_model(model_name, pretrained=False, num_classes=NUM_CLASSES)
+    return build_shared_model(model_name, NUM_CLASSES, pretrained=False)
 
 
-def evaluate_model(model_name: str) -> dict:
+def evaluate_model(model_name: str) -> Optional[dict]:
     weights_path = os.path.join(RESULTS_DIR, model_name, "best.pth")
 
     if not os.path.exists(weights_path):
@@ -220,7 +92,9 @@ def evaluate_model(model_name: str) -> dict:
     resultados_modelo = {"Modelo": model_name}
 
     for pert_name, loader in test_loaders.items():
-        preds_list, labels_list, probs_list = [], [], []
+        preds_list: list[int] = []
+        labels_list: list[int] = []
+        probs_list: list[np.ndarray] = []
 
         if torch.cuda.is_available(): torch.cuda.synchronize()
         start_infer = time.time()
@@ -233,8 +107,8 @@ def evaluate_model(model_name: str) -> dict:
                 _, preds = torch.max(outputs, 1)
 
                 preds_list.extend(preds.cpu().numpy())
-                labels_list.extend(labels.cpu().numpy())
-                probs_list.append(probs.cpu().numpy())
+                labels_list.extend(labels.detach().cpu().tolist())  # type: ignore[arg-type]
+                probs_list.append(probs.detach().cpu().tolist())  # type: ignore[arg-type]
 
         if torch.cuda.is_available(): torch.cuda.synchronize()
         total_infer_time = time.time() - start_infer
@@ -272,15 +146,17 @@ def plot_robustness_group(df, base_col, pert_prefix, title, filename):
     """Gera um gráfico comparando a base limpa com os 3 níveis de uma perturbação."""
     cols_to_plot = [base_col] + [col for col in df.columns if col.startswith(f"F1_{pert_prefix}")]
 
-    df_melted = df.melt(
+    df_melted = df.melt(  # type: ignore[call-arg]
         id_vars=["Modelo"],
         value_vars=cols_to_plot,
         var_name="Nível",
-        value_name="F1-Macro"
+        value_name="F1_Macro"
     )
+    df_melted = df_melted.rename(columns={"F1_Macro": "F1-Macro"})
 
     # Limpar os nomes para a legenda ficar elegante
-    df_melted["Nível"] = df_melted["Nível"].str.replace("F1_", "").str.replace(f"{pert_prefix}_", "Nível ")
+    niveis = [str(valor).replace("F1_", "").replace(f"{pert_prefix}_", "Nível ") for valor in df_melted["Nível"].tolist()]
+    df_melted["Nível"] = niveis
 
     fig, ax = plt.subplots(figsize=(16, 8))
     sns.barplot(data=df_melted, x="Modelo", y="F1-Macro", hue="Nível", palette="rocket_r", ax=ax)

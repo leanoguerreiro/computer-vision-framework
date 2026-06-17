@@ -3,98 +3,20 @@ import random
 import matplotlib.pyplot as plt
 from PIL import Image
 import torch
-from torchvision import datasets, transforms
-import torchvision.transforms.functional as TF
+from torchvision import datasets
+from config import DEFAULT_SEED, TRAINING_DATASET_ROOT, VISUALIZATION_ROBUSTNESS_DIR
+from cv_framework.transforms import build_visualization_perturbation_transforms
 
 # =============================================================================
 # CONFIGURAÇÃO
 # =============================================================================
-INPUT_DIR = 'datasets'
-PASTA_RAIZ = f"{INPUT_DIR}/mri_split_70_20_10"
-ROBUSTNESS_DIR = f"robustness_analysis/{os.path.basename(PASTA_RAIZ)}"
+PASTA_RAIZ = str(TRAINING_DATASET_ROOT)
+ROBUSTNESS_DIR = str(VISUALIZATION_ROBUSTNESS_DIR)
 
 os.makedirs(ROBUSTNESS_DIR, exist_ok=True)
 
 
-# =============================================================================
-# CLASSES DE TRANSFORMAÇÃO
-# =============================================================================
-
-class SquarePad:
-    """Adiciona padding para tornar a imagem quadrada antes do resize."""
-
-    def __call__(self, image):
-        w, h = image.size
-        max_wh = max(w, h)
-        hp = int((max_wh - w) // 2)
-        vp = int((max_wh - h) // 2)
-        padding = [hp, vp, int(max_wh - w - hp), int(max_wh - h - vp)]
-        return TF.pad(image, padding, 0, "constant")
-
-
-class AddGaussianNoise(object):
-    """Adiciona ruído gaussiano determinístico."""
-
-    def __init__(self, mean=0., std=0.1):
-        self.std = std
-        self.mean = mean
-
-    def __call__(self, tensor):
-        noise = torch.randn(tensor.size()) * self.std + self.mean
-        return torch.clamp(tensor + noise, 0., 1.)
-
-
-# Transformações base (pad e resize)
-base_transforms = [
-    SquarePad(),
-    transforms.Resize((224, 224)),
-]
-
-# NOTA: Removemos o Normalize() para podermos visualizar as cores corretamente.
-perturbation_transforms = {
-    "Original / Clean": transforms.Compose(base_transforms + [
-        transforms.ToTensor()
-    ]),
-
-    # ── RUÍDO ────────────────────────────────────────────────────────────────
-    "Noise Leve\n(std=0.05)": transforms.Compose(base_transforms + [
-        transforms.ToTensor(), AddGaussianNoise(std=0.05)
-    ]),
-    "Noise Moderado\n(std=0.15)": transforms.Compose(base_transforms + [
-        transforms.ToTensor(), AddGaussianNoise(std=0.15)
-    ]),
-    "Noise Extremo\n(std=0.30)": transforms.Compose(base_transforms + [
-        transforms.ToTensor(), AddGaussianNoise(std=0.30)
-    ]),
-
-    # ── DESFOQUE ─────────────────────────────────────────────────────────────
-    "Blur Leve\n(k=3, s=1.0)": transforms.Compose(base_transforms + [
-        transforms.GaussianBlur(kernel_size=3, sigma=1.0),
-        transforms.ToTensor()
-    ]),
-    "Blur Moderado\n(k=5, s=2.0)": transforms.Compose(base_transforms + [
-        transforms.GaussianBlur(kernel_size=5, sigma=2.0),
-        transforms.ToTensor()
-    ]),
-    "Blur Extremo\n(k=9, s=4.0)": transforms.Compose(base_transforms + [
-        transforms.GaussianBlur(kernel_size=9, sigma=4.0),
-        transforms.ToTensor()
-    ]),
-
-    # ── CONTRASTE ────────────────────────────────────────────────────────────
-    "Contrast Leve\n(60%)": transforms.Compose(base_transforms + [
-        transforms.Lambda(lambda img: TF.adjust_contrast(img, 0.6)),
-        transforms.ToTensor()
-    ]),
-    "Contrast Moderado\n(30%)": transforms.Compose(base_transforms + [
-        transforms.Lambda(lambda img: TF.adjust_contrast(img, 0.3)),
-        transforms.ToTensor()
-    ]),
-    "Contrast Extremo\n(10%)": transforms.Compose(base_transforms + [
-        transforms.Lambda(lambda img: TF.adjust_contrast(img, 0.1)),
-        transforms.ToTensor()
-    ])
-}
+perturbation_transforms = build_visualization_perturbation_transforms()
 
 
 # =============================================================================
@@ -147,7 +69,7 @@ def plot_perturbation_samples():
 
 if __name__ == "__main__":
     # Fixar seed para sempre gerar a mesma imagem, se quiser (opcional)
-    random.seed(42)
-    torch.manual_seed(42)
+    random.seed(DEFAULT_SEED)
+    torch.manual_seed(DEFAULT_SEED)
 
     plot_perturbation_samples()

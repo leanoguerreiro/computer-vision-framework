@@ -1,7 +1,6 @@
-import os
 import gc
-import random
 import time
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -14,7 +13,6 @@ from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.transforms import v2
-import torchvision.transforms.functional as TF
 from sklearn.metrics import f1_score, roc_auc_score, confusion_matrix, roc_curve, auc
 from sklearn.preprocessing import label_binarize
 from tqdm import tqdm
@@ -24,96 +22,65 @@ from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 import warnings
 import umap
 import pandas as pd
+from config import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_EARLY_STOPPING_MIN_DELTA,
+    DEFAULT_EARLY_STOPPING_PATIENCE,
+    DEFAULT_EPOCHS,
+    DEFAULT_LR,
+    DEFAULT_MODEL_NAME,
+    DEFAULT_SEED,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    RADIMAGENET_WEIGHTS_URL,
+    TRAINING_DATASET_ROOT,
+    TRAINING_PLOT_DIR,
+    TRAINING_RESULTS_DIR,
+    TRAINING_CSV_PATH,
+)
+from cv_framework.data import build_class_weights, build_imagefolder_datasets
+from cv_framework.models import build_model as build_shared_model
+from cv_framework.reproducibility import set_seed
+from cv_framework.training import EarlyStopping
+from cv_framework.transforms import build_eval_transform, build_train_transform
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # =============================================================================
 # CONFIGURAÇÃO GLOBAL
 # =============================================================================
-INPUT_DIR = "datasets"
-PASTA_RAIZ = f"{INPUT_DIR}/mri_split_70_20_10"
-PLOT_DIR = f"plots_standart/{os.path.basename(PASTA_RAIZ)}"
-RESULTS_DIR = f"results_standart/{os.path.basename(PASTA_RAIZ)}"
-CSV_PATH = os.path.join(RESULTS_DIR, "training_metrics.csv")
-# Configurações de Treino
-MODEL_NAME = "resnet18"  # Escolha apenas UM modelo aqui
-BATCH_SIZE = 32
-NUM_EPOCHS = 50
-LR = 1e-3
-ES_PATIENCE = 5
-ES_MIN_DELTA = 0.001
+PASTA_RAIZ = str(TRAINING_DATASET_ROOT)
+PLOT_DIR = str(TRAINING_PLOT_DIR)
+RESULTS_DIR = str(TRAINING_RESULTS_DIR)
+CSV_PATH = str(TRAINING_CSV_PATH)
+MODEL_NAME = DEFAULT_MODEL_NAME
+BATCH_SIZE = DEFAULT_BATCH_SIZE
+NUM_EPOCHS = DEFAULT_EPOCHS
+LR = DEFAULT_LR
+ES_PATIENCE = DEFAULT_EARLY_STOPPING_PATIENCE
+ES_MIN_DELTA = DEFAULT_EARLY_STOPPING_MIN_DELTA
 
-RADIMAGENET_WEIGHTS_URL = (
-    "https://huggingface.co/BMEII/RadImageNet/resolve/main/"
-    "RadImageNet-ResNet50_notop.pth"
-)
-
-os.makedirs(PLOT_DIR, exist_ok=True)
-os.makedirs(RESULTS_DIR, exist_ok=True)
+Path(PLOT_DIR).mkdir(parents=True, exist_ok=True)
+Path(RESULTS_DIR).mkdir(parents=True, exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# =============================================================================
-# REPRODUTIBILIDADE
-# =============================================================================
-
-def set_seed(seed: int = 42) -> None:
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+set_seed(DEFAULT_SEED)
 
 
-set_seed(42)
-
-
-# =============================================================================
-# PRÉ-PROCESSAMENTO
-# =============================================================================
-
-class SquarePad:
-    """Adiciona padding para tornar a imagem quadrada antes do resize."""
-
-    def __call__(self, image):
-        w, h = image.size
-        max_wh = max(w, h)
-        hp = int((max_wh - w) // 2)
-        vp = int((max_wh - h) // 2)
-        padding = [hp, vp, int(max_wh - w - hp), int(max_wh - h - vp)]
-        return TF.pad(image, padding, 0, "constant")
-
-
-transform_train = v2.Compose([
-    SquarePad(),
-    v2.Resize((224, 224)),
-    v2.RandomRotation(degrees=360),
-    v2.RandomHorizontalFlip(p=0.5),
-    v2.RandomVerticalFlip(p=0.5),
-    v2.Grayscale(num_output_channels=3),
-    v2.ToTensor(),
-    v2.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    v2.RandomErasing(p=0.5, scale=(0.02, 0.15), ratio=(0.3, 3.3), value='random')
-])
-
-transform = transforms.Compose([
-    SquarePad(),
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-])
+transform_train = build_train_transform()
+transform = build_eval_transform()
 
 # =============================================================================
 # DATASETS E DATALOADERS
 # =============================================================================
 
-dataset_train = datasets.ImageFolder(os.path.join(PASTA_RAIZ, "train"), transform=transform_train)
-dataset_val = datasets.ImageFolder(os.path.join(PASTA_RAIZ, "val"), transform=transform)
-dataset_test = datasets.ImageFolder(os.path.join(PASTA_RAIZ, "test"), transform=transform)
+dataset_train, dataset_val, dataset_test = build_imagefolder_datasets(
+    PASTA_RAIZ,
+    train_transform=transform_train,
+    eval_transform=transform,
+)
 
 NOME_CLASSES = dataset_train.classes
 NUM_CLASSES = len(NOME_CLASSES)
@@ -134,45 +101,13 @@ def make_loaders(batch_size: int):
 
 def build_criterion() -> nn.CrossEntropyLoss:
     """Calcula pesos inversamente proporcionais ao tamanho de cada classe."""
-    counts = torch.tensor(
-        [dataset_train.targets.count(i) for i in range(NUM_CLASSES)],
-        dtype=torch.float,
-    )
-    weights = (1.0 / counts)
-    weights = (weights / weights.sum()).to(device)
+    weights = build_class_weights(dataset_train.targets, NUM_CLASSES, device=device)
     return nn.CrossEntropyLoss(weight=weights)
 
 
 # =============================================================================
 # EARLY STOPPING
 # =============================================================================
-
-class EarlyStopping:
-    """Monitora o F1 macro e para o treino se não houver melhora."""
-
-    def __init__(self, patience: int, min_delta: float, path: str) -> None:
-        self.patience = patience
-        self.min_delta = min_delta
-        self.path = path
-        self.counter = 0
-        self.best_score = None
-        self.triggered = False
-        self.best_data = {}
-
-    def step(self, score: float, model: nn.Module, epoch_data: dict) -> bool:
-        improved = (self.best_score is None or score > self.best_score + self.min_delta)
-        if improved:
-            self.best_score = score
-            self.counter = 0
-            self.best_data = epoch_data
-            torch.save(model.state_dict(), self.path)
-            print(f"   ✅ Novo melhor F1 Val: {score:.4f} — modelo salvo.")
-        else:
-            self.counter += 1
-            print(f"   ⏳ Sem melhora ({self.counter}/{self.patience})")
-            if self.counter >= self.patience:
-                self.triggered = True
-        return self.triggered
 
 
 # =============================================================================
@@ -392,21 +327,13 @@ def save_gradcam_samples(model, model_name, test_loader, num_samples=5):
 # =============================================================================
 
 def build_model(model_name: str) -> nn.Module:
-    if model_name != "resnet50_radimagenet":
-        return timm.create_model(model_name, pretrained=True, num_classes=NUM_CLASSES)
-
-    import urllib.request
-    weights_path = os.path.join(RESULTS_DIR, "RadImageNet-ResNet50_notop.pth")
-    if not os.path.exists(weights_path):
-        print("  Baixando pesos RadImageNet...")
-        urllib.request.urlretrieve(RADIMAGENET_WEIGHTS_URL, weights_path)
-
-    model = timm.create_model("resnet50", pretrained=False, num_classes=0)
-    state = torch.load(weights_path, map_location="cpu")
-    missing, _ = model.load_state_dict(state, strict=False)
-
-    model.fc = nn.Linear(model.num_features.item(), NUM_CLASSES)
-    return model
+    return build_shared_model(
+        model_name,
+        NUM_CLASSES,
+        pretrained=True,
+        results_dir=RESULTS_DIR,
+        radimagenet_weights_url=RADIMAGENET_WEIGHTS_URL,
+    )
 
 
 # =============================================================================

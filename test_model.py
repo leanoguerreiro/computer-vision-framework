@@ -1,114 +1,52 @@
-import os
 import gc
-import random
 import time
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
-import torch.nn as nn
 import timm
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-import torchvision.transforms.functional as TF
 from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.preprocessing import label_binarize
 from tqdm import tqdm
 from dotenv import load_dotenv
+from config import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_SEED,
+    ROBUSTNESS_CSV_PATH,
+    ROBUSTNESS_DATASET_ROOT,
+    ROBUSTNESS_PLOT_DIR,
+    ROBUSTNESS_RESULTS_DIR,
+)
+from cv_framework.models import build_model as build_shared_model
+from cv_framework.reproducibility import set_seed
+from cv_framework.transforms import build_perturbation_transforms
 
 load_dotenv()
 
 # =============================================================================
 # CONFIGURAÇÃO GLOBAL
 # =============================================================================
-INPUT_DIR = "datasets"
-PASTA_RAIZ = f"{INPUT_DIR}/mri_split_70_20_10"
-RESULTS_DIR = f"results_standart/{os.path.basename(PASTA_RAIZ)}"
-ROBUSTNESS_DIR = f"robustness_analysis_standart/{os.path.basename(PASTA_RAIZ)}"
-CSV_PATH = os.path.join(ROBUSTNESS_DIR, "robustness_metrics_levels.csv")
-BATCH_SIZE = 32
+PASTA_RAIZ = str(ROBUSTNESS_DATASET_ROOT)
+RESULTS_DIR = str(ROBUSTNESS_RESULTS_DIR)
+ROBUSTNESS_DIR = str(ROBUSTNESS_PLOT_DIR)
+CSV_PATH = str(ROBUSTNESS_CSV_PATH)
+BATCH_SIZE = DEFAULT_BATCH_SIZE
 
 # Configuração do Modelo Único
-MODEL_NAME = "resnet18"  # Escolha o modelo aqui
+MODEL_NAME = "resnet18"
 
-os.makedirs(ROBUSTNESS_DIR, exist_ok=True)
+Path(ROBUSTNESS_DIR).mkdir(parents=True, exist_ok=True)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def set_seed(seed: int = 42) -> None:
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+set_seed(DEFAULT_SEED)
 
 
-set_seed(42)
-
-
-# =============================================================================
-# CLASSES DE TRANSFORMAÇÃO E PERTURBAÇÃO
-# =============================================================================
-
-class AdjustContrast:
-    def __init__(self, factor):
-        self.factor = factor
-
-    def __call__(self, img):
-        return TF.adjust_contrast(img, self.factor)
-
-
-class SquarePad:
-    def __call__(self, image):
-        w, h = image.size
-        max_wh = max(w, h)
-        hp = int((max_wh - w) // 2)
-        vp = int((max_wh - h) // 2)
-        padding = [hp, vp, int(max_wh - w - hp), int(max_wh - h - vp)]
-        return TF.pad(image, padding, 0, "constant")
-
-
-class AddGaussianNoise(object):
-    def __init__(self, mean=0., std=0.1):
-        self.std = std
-        self.mean = mean
-
-    def __call__(self, tensor):
-        noise = torch.randn(tensor.size()) * self.std + self.mean
-        return torch.clamp(tensor + noise, 0., 1.)
-
-
-base_transforms = [
-    SquarePad(),
-    transforms.Resize((224, 224)),
-]
-
-normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-
-perturbation_transforms = {
-    "Clean": transforms.Compose(base_transforms + [transforms.ToTensor(), normalize]),
-
-    "Noise_Leve": transforms.Compose(base_transforms + [transforms.ToTensor(), AddGaussianNoise(std=0.05), normalize]),
-    "Noise_Moderada": transforms.Compose(
-        base_transforms + [transforms.ToTensor(), AddGaussianNoise(std=0.15), normalize]),
-    "Noise_Extrema": transforms.Compose(
-        base_transforms + [transforms.ToTensor(), AddGaussianNoise(std=0.30), normalize]),
-
-    "Blur_Leve": transforms.Compose(
-        base_transforms + [transforms.GaussianBlur(kernel_size=3, sigma=1.0), transforms.ToTensor(), normalize]),
-    "Blur_Moderada": transforms.Compose(
-        base_transforms + [transforms.GaussianBlur(kernel_size=5, sigma=2.0), transforms.ToTensor(), normalize]),
-    "Blur_Extrema": transforms.Compose(
-        base_transforms + [transforms.GaussianBlur(kernel_size=9, sigma=4.0), transforms.ToTensor(), normalize]),
-
-    "Contrast_Leve": transforms.Compose(base_transforms + [AdjustContrast(0.6), transforms.ToTensor(), normalize]),
-    "Contrast_Moderada": transforms.Compose(base_transforms + [AdjustContrast(0.3), transforms.ToTensor(), normalize]),
-    "Contrast_Extrema": transforms.Compose(base_transforms + [AdjustContrast(0.1), transforms.ToTensor(), normalize])
-}
+perturbation_transforms = build_perturbation_transforms()
 
 # =============================================================================
 # PREPARAÇÃO DOS DATALOADERS
@@ -140,7 +78,7 @@ def evaluate_single_model(model_name: str) -> dict:
 
     print(f"\n{'=' * 60}\n  AVALIANDO ROBUSTEZ: {model_name.upper()}\n{'=' * 60}")
 
-    model = timm.create_model(model_name, pretrained=False, num_classes=NUM_CLASSES).to(device)
+    model = build_shared_model(model_name, NUM_CLASSES, pretrained=False).to(device)
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model.eval()
 

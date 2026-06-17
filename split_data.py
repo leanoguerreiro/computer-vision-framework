@@ -58,7 +58,7 @@ def dividir_treino_val_teste(origem, destino, p_treino=0.7, p_val=0.2, p_teste=0
 
 if __name__ == "__main__":
     # Ajuste para o caminho da sua pasta MRI
-    PASTA_ORIGEM = "data/mri"
-    PASTA_DESTINO = "mri_split_70_20_10"
+    PASTA_ORIGEM = "./data_raw/Multi Cancer/Multi Cancer/ALL"
+    PASTA_DESTINO = "datasets/MC_ALL_70_20_10"
 
     dividir_treino_val_teste(PASTA_ORIGEM, PASTA_DESTINO)
