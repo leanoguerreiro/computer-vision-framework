@@ -23,6 +23,8 @@ O fluxo principal do projeto é a classificação das quatro classes de MRI pres
 
 ### Estrutura principal
 
+- `cv_framework/`: pacote interno com transforms, dataloaders, modelos, seed e early stopping reutilizáveis.
+- `config.py`: centraliza hiperparâmetros, seeds, caminhos e listas de modelos usados pelos scripts.
 - `data/mri/`: dados brutos do conjunto de MRI.
 - `mri_split_70_20_10/`: particionamento já preparado em treino, validação e teste.
 - `plots/`: gráficos e CSV do benchmark principal.
@@ -32,6 +34,8 @@ O fluxo principal do projeto é a classificação das quatro classes de MRI pres
 ---
 
 ## Scripts principais
+
+Os arquivos na raiz continuam funcionando como pontos de entrada, mas agora reutilizam funções do pacote `cv_framework/`.
 
 ### `split_data.py`
 Cria a divisão estratificada por classe em **70% treino / 20% validação / 10% teste** a partir de `data/mri/`.
@@ -44,7 +48,7 @@ Balanceia o conjunto de treino com *data augmentation* simples:
 - `ColorJitter`
 
 ### `benchmark.py`
-É o script central do benchmark. Ele:
+É o entrypoint do benchmark principal e delega a execução para `cv_framework/benchmarking.py`. Ele:
 
 - lê os dados de `mri_split_70_20_10/`;
 - aplica `SquarePad`, `Resize(224, 224)` e normalização ImageNet;
@@ -52,6 +56,26 @@ Balanceia o conjunto de treino com *data augmentation* simples:
 - salva os melhores pesos em `results/<modelo>/best.pth`;
 - gera gráficos de aprendizado, F1 por classe, curvas ROC e matrizes de confusão;
 - consolida um ranking em `plots/benchmark_results_test_train.csv`.
+
+### `config.py`
+Arquivo único para manter os hiperparâmetros e caminhos do projeto. Entre os itens centralizados estão:
+
+- `DEFAULT_SEED`
+- `DEFAULT_BATCH_SIZE`
+- `DEFAULT_EPOCHS`
+- `DEFAULT_LR`
+- `DEFAULT_EARLY_STOPPING_PATIENCE`
+- `DEFAULT_EARLY_STOPPING_MIN_DELTA`
+- `BENCHMARK_MODELS`
+- `ROBUSTNESS_MODELS`
+- diretórios de saída como `BENCHMARK_PLOT_DIR`, `TRAINING_PLOT_DIR` e `ROBUSTNESS_PLOT_DIR`
+
+### `cv_framework/benchmarking.py`
+Contém a implementação modular do benchmark principal:
+
+- `BenchmarkContext` para agrupar parâmetros do experimento;
+- `BenchmarkRunner` para carregar dados, treinar, avaliar e gerar relatórios;
+- `run_benchmark()` como atalho simples para execução.
 
 ### `evaluate_models.py`
 Reaproveita os melhores pesos salvos em `results/` para medir robustez no conjunto de teste sob três tipos de perturbação:
@@ -61,6 +85,9 @@ Reaproveita os melhores pesos salvos em `results/` para medir robustez no conjun
 - redução de contraste
 
 Cada perturbação é avaliada em três níveis: leve, moderado e extremo.
+
+### `train_model.py`, `test_model.py` e `visualize_img_atack.py`
+Esses scripts também passaram a consumir os caminhos e hiperparâmetros de `config.py`, reduzindo duplicação e facilitando ajustes globais.
 
 ### Scripts auxiliares
 

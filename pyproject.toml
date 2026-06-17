@@ -1,7 +1,7 @@
 [project]
 name = "okdef-industrial"
 version = "0.1.0"
-description = "Add your description here"
+description = "Pipeline modular de classificação e robustez em visão computacional médica"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -22,3 +22,14 @@ dependencies = [
     "tqdm>=4.67.3",
     "umap-learn>=0.5.12",
 ]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["cv_framework*"]
+
