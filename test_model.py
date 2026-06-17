@@ -1,18 +1,20 @@
 import gc
 import time
+import warnings
+from dataclasses import dataclass
 from pathlib import Path
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
-import timm
-from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
 from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.preprocessing import label_binarize
+from torch.utils.data import DataLoader
+from torchvision import datasets
 from tqdm import tqdm
-from dotenv import load_dotenv
+
 from config import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_SEED,
@@ -25,193 +27,199 @@ from cv_framework.models import build_model as build_shared_model
 from cv_framework.reproducibility import set_seed
 from cv_framework.transforms import build_perturbation_transforms
 
-load_dotenv()
-
-# =============================================================================
-# CONFIGURAÇÃO GLOBAL
-# =============================================================================
-PASTA_RAIZ = str(ROBUSTNESS_DATASET_ROOT)
-RESULTS_DIR = str(ROBUSTNESS_RESULTS_DIR)
-ROBUSTNESS_DIR = str(ROBUSTNESS_PLOT_DIR)
-CSV_PATH = str(ROBUSTNESS_CSV_PATH)
-BATCH_SIZE = DEFAULT_BATCH_SIZE
-
-# Configuração do Modelo Único
-MODEL_NAME = "resnet18"
-
-Path(ROBUSTNESS_DIR).mkdir(parents=True, exist_ok=True)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
-set_seed(DEFAULT_SEED)
+@dataclass
+class RobustnessConfig:
+    """Configurações centralizadas para o teste de robustez."""
+    model: str = "resnet18"
+    batch_size: int = DEFAULT_BATCH_SIZE
+    seed: int = DEFAULT_SEED
 
 
-perturbation_transforms = build_perturbation_transforms()
+class RobustnessEvaluator:
+    """Orquestra a avaliação de um modelo treinado sob diferentes níveis de degradação."""
 
-# =============================================================================
-# PREPARAÇÃO DOS DATALOADERS
-# =============================================================================
+    def __init__(self, config: RobustnessConfig):
+        self.config = config
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-print("Carregando datasets de teste perturbados...")
-test_dir = os.path.join(PASTA_RAIZ, "test")
+        set_seed(self.config.seed)
 
-dummy_dataset = datasets.ImageFolder(test_dir)
-NOME_CLASSES = dummy_dataset.classes
-NUM_CLASSES = len(NOME_CLASSES)
-print(f"Classes detectadas ({NUM_CLASSES}): {NOME_CLASSES}")
+        # Definição e criação de caminhos estruturados usando pathlib
+        self.root_dir = Path(ROBUSTNESS_DATASET_ROOT)
+        self.results_dir = Path(ROBUSTNESS_RESULTS_DIR)
+        self.plot_dir = Path(ROBUSTNESS_PLOT_DIR)
+        self.csv_path = Path(ROBUSTNESS_CSV_PATH)
 
-test_loaders = {}
-for pert_name, trans in perturbation_transforms.items():
-    ds_test = datasets.ImageFolder(test_dir, transform=trans)
-    test_loaders[pert_name] = DataLoader(ds_test, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+        self.plot_dir.mkdir(parents=True, exist_ok=True)
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
 
+        self.perturbation_transforms = build_perturbation_transforms()
+        self._prepare_dataloaders()
 
-# =============================================================================
-# AVALIAÇÃO DO MODELO
-# =============================================================================
+    def _prepare_dataloaders(self):
+        print("Carregando datasets de teste perturbados...")
+        test_dir = self.root_dir / "test"
 
-def evaluate_single_model(model_name: str) -> dict:
-    weights_path = os.path.join(RESULTS_DIR, model_name, "best.pth")
+        # Extração das classes
+        dummy_dataset = datasets.ImageFolder(str(test_dir))
+        self.class_names = dummy_dataset.classes
+        self.num_classes = len(self.class_names)
+        print(f"Classes detectadas ({self.num_classes}): {self.class_names}")
 
-    if not os.path.exists(weights_path):
-        raise FileNotFoundError(f"Pesos não encontrados para {model_name} em: {weights_path}")
+        # Construção do dicionário de DataLoaders para cada perturbação
+        self.test_loaders = {}
+        for pert_name, trans in self.perturbation_transforms.items():
+            ds_test = datasets.ImageFolder(str(test_dir), transform=trans)
+            self.test_loaders[pert_name] = DataLoader(
+                ds_test,
+                batch_size=self.config.batch_size,
+                shuffle=False,
+                num_workers=4
+            )
 
-    print(f"\n{'=' * 60}\n  AVALIANDO ROBUSTEZ: {model_name.upper()}\n{'=' * 60}")
+    def evaluate(self) -> dict:
+        weights_path = self.results_dir / self.config.model / "best.pth"
 
-    model = build_shared_model(model_name, NUM_CLASSES, pretrained=False).to(device)
-    model.load_state_dict(torch.load(weights_path, map_location=device))
-    model.eval()
+        if not weights_path.exists():
+            raise FileNotFoundError(f"Pesos não encontrados para {self.config.model} em: {weights_path}")
 
-    resultados_modelo = {
-        "Data_Hora": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "Modelo": model_name
-    }
+        print(f"\n{'=' * 60}\n  AVALIANDO ROBUSTEZ: {self.config.model.upper()}\n{'=' * 60}")
 
-    for pert_name, loader in test_loaders.items():
-        preds_list, labels_list, probs_list = [], [], []
+        model = build_shared_model(self.config.model, self.num_classes, pretrained=False).to(self.device)
+        model.load_state_dict(torch.load(weights_path, map_location=self.device))
+        model.eval()
 
-        if torch.cuda.is_available(): torch.cuda.synchronize()
-        start_infer = time.time()
+        resultados_modelo = {
+            "Data_Hora": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "Modelo": self.config.model
+        }
 
-        with torch.no_grad():
-            for inputs, labels in tqdm(loader, desc=f"Inferência [{pert_name.ljust(15)}]", leave=False):
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                probs = torch.nn.functional.softmax(outputs, dim=1)
-                _, preds = torch.max(outputs, 1)
+        for pert_name, loader in self.test_loaders.items():
+            preds_list, labels_list, probs_list = [], [], []
 
-                preds_list.extend(preds.cpu().numpy())
-                labels_list.extend(labels.cpu().numpy())
-                probs_list.append(probs.cpu().numpy())
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            start_infer = time.time()
 
-        if torch.cuda.is_available(): torch.cuda.synchronize()
-        total_infer_time = time.time() - start_infer
-        infer_ms_per_img = (total_infer_time / len(loader.dataset)) * 1000
+            with torch.no_grad():
+                for inputs, labels in tqdm(loader, desc=f"Inferência [{pert_name.ljust(15)}]", leave=False):
+                    inputs, labels = inputs.to(self.device), labels.to(self.device)
+                    outputs = model(inputs)
+                    probs = torch.nn.functional.softmax(outputs, dim=1)
+                    _, preds = torch.max(outputs, 1)
 
-        probs_matrix = np.vstack(probs_list)
-        f1_macro = f1_score(labels_list, preds_list, average="macro", zero_division=0)
+                    preds_list.extend(preds.cpu().numpy())
+                    labels_list.extend(labels.cpu().numpy())
+                    probs_list.append(probs.cpu().numpy())
 
-        if NUM_CLASSES == 2:
-            auc_macro = roc_auc_score(labels_list, probs_matrix[:, 1])
-        else:
-            true_bin = label_binarize(labels_list, classes=list(range(NUM_CLASSES)))
-            auc_macro = roc_auc_score(true_bin, probs_matrix, multi_class="ovr", average="macro")
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
-        resultados_modelo[f"F1_{pert_name}"] = f1_macro
-        resultados_modelo[f"AUC_{pert_name}"] = auc_macro
-        resultados_modelo[f"Time_ms_img_{pert_name}"] = infer_ms_per_img
+            total_infer_time = time.time() - start_infer
+            infer_ms_per_img = (total_infer_time / len(loader.dataset)) * 1000
 
-        print(
-            f"  ➔ {pert_name.ljust(17)}: F1-Macro = {f1_macro:.4f} | AUC-Macro = {auc_macro:.4f} | Tempo/img = {infer_ms_per_img:.2f} ms")
+            probs_matrix = np.vstack(probs_list)
+            f1_macro = f1_score(labels_list, preds_list, average="macro", zero_division=0)
 
-    del model
-    gc.collect()
-    torch.cuda.empty_cache()
+            if self.num_classes == 2:
+                auc_macro = roc_auc_score(labels_list, probs_matrix[:, 1])
+            else:
+                true_bin = label_binarize(labels_list, classes=list(range(self.num_classes)))
+                auc_macro = roc_auc_score(true_bin, probs_matrix, multi_class="ovr", average="macro")
 
-    return resultados_modelo
+            resultados_modelo[f"F1_{pert_name}"] = f1_macro
+            resultados_modelo[f"AUC_{pert_name}"] = auc_macro
+            resultados_modelo[f"Time_ms_img_{pert_name}"] = infer_ms_per_img
 
+            print(
+                f"  ➔ {pert_name.ljust(17)}: F1-Macro = {f1_macro:.4f} | AUC-Macro = {auc_macro:.4f} | Tempo/img = {infer_ms_per_img:.2f} ms")
 
-# =============================================================================
-# GERAÇÃO DE GRÁFICO INDIVIDUAL
-# =============================================================================
+        # Limpeza de memória
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-def plot_single_model_degradation(resultados: dict, model_name: str):
-    """Gera um gráfico focado na degradação de um único modelo frente a diferentes ruídos."""
+        return resultados_modelo
 
-    # Estruturando os dados para o gráfico
-    data = []
-    baseline = resultados["F1_Clean"]
+    def plot_degradation(self, resultados: dict):
+        """Gera um gráfico focado na degradação frente a diferentes ruídos."""
+        data = []
+        baseline = resultados.get("F1_Clean", 0)
 
-    tipos_pertubacao = ["Noise", "Blur", "Contrast"]
-    niveis = ["Leve", "Moderada", "Extrema"]
+        tipos_pertubacao = ["Noise", "Blur", "Contrast"]
+        niveis = ["Leve", "Moderada", "Extrema"]
 
-    # Adicionando o baseline para todos os tipos para visualização
-    for tipo in tipos_pertubacao:
-        data.append({"Perturbação": tipo, "Severidade": "Limpo (Baseline)", "F1-Macro": baseline})
-        for nivel in niveis:
-            chave = f"F1_{tipo}_{nivel}"
-            if chave in resultados:
-                data.append({"Perturbação": tipo, "Severidade": nivel, "F1-Macro": resultados[chave]})
+        for tipo in tipos_pertubacao:
+            data.append({"Perturbação": tipo, "Severidade": "Limpo (Baseline)", "F1-Macro": baseline})
+            for nivel in niveis:
+                chave = f"F1_{tipo}_{nivel}"
+                if chave in resultados:
+                    data.append({"Perturbação": tipo, "Severidade": nivel, "F1-Macro": resultados[chave]})
 
-    df_plot = pd.DataFrame(data)
+        df_plot = pd.DataFrame(data)
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    sns.barplot(
-        data=df_plot,
-        x="Perturbação",
-        y="F1-Macro",
-        hue="Severidade",
-        palette="viridis",
-        ax=ax
-    )
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.barplot(
+            data=df_plot,
+            x="Perturbação",
+            y="F1-Macro",
+            hue="Severidade",
+            palette="viridis",
+            ax=ax
+        )
 
-    ax.set_title(f"Análise de Robustez (Degradação) — {model_name.upper()}", fontsize=14, pad=15, fontweight='bold')
-    ax.set_ylabel("F1-Score Macro", fontsize=12)
-    ax.set_xlabel("Tipo de Alteração", fontsize=12)
-    ax.set_ylim(0, 1.05)
-    ax.legend(title="Nível de Severidade", bbox_to_anchor=(1.01, 1), loc='upper left')
-    ax.grid(axis='y', linestyle='--', alpha=0.7)
+        ax.set_title(f"Análise de Robustez (Degradação) — {self.config.model.upper()}", fontsize=14, pad=15,
+                     fontweight='bold')
+        ax.set_ylabel("F1-Score Macro", fontsize=12)
+        ax.set_xlabel("Tipo de Alteração", fontsize=12)
+        ax.set_ylim(0, 1.05)
+        ax.legend(title="Nível de Severidade", bbox_to_anchor=(1.01, 1), loc='upper left')
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
 
-    fig.tight_layout()
-    plot_path = os.path.join(ROBUSTNESS_DIR, f"robustness_degradation_{model_name}.png")
-    fig.savefig(plot_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
+        fig.tight_layout()
+        plot_path = self.plot_dir / f"robustness_degradation_{self.config.model}.png"
+        fig.savefig(plot_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
 
+        print(f"📊 Gráfico de degradação salvo em: {plot_path}")
 
-# =============================================================================
-# EXECUÇÃO PRINCIPAL
-# =============================================================================
-
-if __name__ == "__main__":
-    try:
-        resultado = evaluate_single_model(MODEL_NAME)
+    def save_results(self, resultado: dict):
         df_novo = pd.DataFrame([resultado])
 
-        # Lógica de salvamento em CSV (Smart Append)
-        if os.path.exists(CSV_PATH):
-            df_existente = pd.read_csv(CSV_PATH)
-            # Remove entrada anterior do mesmo modelo para não duplicar no histórico
-            df_existente = df_existente[df_existente["Modelo"] != MODEL_NAME]
+        if self.csv_path.exists():
+            df_existente = pd.read_csv(self.csv_path)
+            df_existente = df_existente[df_existente["Modelo"] != self.config.model]
             df_final = pd.concat([df_existente, df_novo], ignore_index=True)
         else:
             df_final = df_novo
 
         # Reordena para manter os melhores no topo baseado na imagem limpa
         df_final = df_final.sort_values("F1_Clean", ascending=False)
-        df_final.to_csv(CSV_PATH, index=False)
+        df_final.to_csv(self.csv_path, index=False)
 
         print("\n" + "=" * 80)
-        print(f"RESUMO SALVO EM: {CSV_PATH}")
+        print(f"RESUMO SALVO EM: {self.csv_path}")
         print("=" * 80)
-
         colunas_exibicao = ["Modelo", "F1_Clean", "AUC_Clean", "Time_ms_img_Clean"]
         print(df_novo[colunas_exibicao].to_string(index=False))
 
-        # Gera o gráfico de degradação
-        plot_single_model_degradation(resultado, MODEL_NAME)
 
-        print(f"\n✅ Análise finalizada!")
-        print(f"📊 Gráfico de degradação salvo em: {ROBUSTNESS_DIR}/robustness_degradation_{MODEL_NAME}.png")
+if __name__ == "__main__":
+    config = RobustnessConfig(
+        model="resnet18",
+        batch_size=32
+    )
+
+    try:
+        evaluator = RobustnessEvaluator(config)
+        resultado = evaluator.evaluate()
+        evaluator.save_results(resultado)
+        evaluator.plot_degradation(resultado)
+        print("\n✅ Análise finalizada!")
 
     except Exception as e:
         print(f"\n❌ Falha durante a avaliação do modelo: {e}")
