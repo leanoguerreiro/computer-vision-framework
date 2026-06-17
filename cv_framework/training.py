@@ -1,41 +1,54 @@
 """Componentes de treino compartilhados."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
-from typing import Optional
-
+from typing import TypedDict, Optional
 import torch
 import torch.nn as nn
 
-
-@dataclass
-class EarlyStopping:
-    """Para o treino quando uma métrica monitorada não melhora."""
-
+class EarlyStoppingState(TypedDict):
     patience: int
     min_delta: float
     path: str
-    counter: int = 0
-    best_score: Optional[float] = None
-    triggered: bool = False
-    best_data: dict = field(default_factory=dict)
+    counter: int
+    best_score: Optional[float]
+    triggered: bool
+    best_data: dict
 
-    def step(self, score: float, model: nn.Module, epoch_data: dict) -> bool:
-        improved = self.best_score is None or score > self.best_score + self.min_delta
+def init_early_stopping(patience: int, min_delta: float, path: str) -> EarlyStoppingState:
+    """Inicializa o estado do early stopping."""
+    return {
+        "patience": patience,
+        "min_delta": min_delta,
+        "path": path,
+        "counter": 0,
+        "best_score": None,
+        "triggered": False,
+        "best_data": {}
+    }
 
-        if improved:
-            self.best_score = score
-            self.counter = 0
-            self.best_data = epoch_data
-            torch.save(model.state_dict(), self.path)
-            print(f"   ✅ Novo melhor F1 Val: {score:.4f} — modelo salvo.")
-        else:
-            self.counter += 1
-            print(f"   ⏳ Sem melhora ({self.counter}/{self.patience})")
-            if self.counter >= self.patience:
-                self.triggered = True
+def step_early_stopping(
+    state: EarlyStoppingState,
+    score: float,
+    model: nn.Module,
+    epoch_data: dict
+) -> EarlyStoppingState:
+    """
+    Avalia a métrica e retorna um NOVO estado (imutabilidade).
+    Salva o modelo como efeito colateral se houver melhora.
+    """
+    improved = state["best_score"] is None or score > state["best_score"] + state["min_delta"]
 
-        return self.triggered
+    new_state = dict(state)
 
+    if improved:
+        new_state["best_score"] = score
+        new_state["counter"] = 0
+        new_state["best_data"] = epoch_data
+        torch.save(model.state_dict(), state["path"])
+        print(f"   ✅ Novo melhor F1 Val: {score:.4f} — modelo salvo.")
+    else:
+        new_state["counter"] += 1
+        print(f"   ⏳ Sem melhora ({new_state['counter']}/{state['patience']})")
+        if new_state["counter"] >= state["patience"]:
+            new_state["triggered"] = True
 
+    return new_state
