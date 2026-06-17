@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import torch
 from torchvision import transforms
+from torchvision.transforms import v2
 import torchvision.transforms.functional as TF
 
 IMAGE_SIZE = 224
@@ -55,13 +56,17 @@ def build_train_transform(image_size: int = IMAGE_SIZE):
     return transforms.Compose(
         _base_pipeline(image_size)
         + [
-            transforms.RandomRotation(degrees=360),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomVerticalFlip(p=0.5),
-            transforms.Grayscale(num_output_channels=3),
-            transforms.ToTensor(),
-            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
-            transforms.RandomErasing(p=0.5, scale=(0.02, 0.15), ratio=(0.3, 3.3), value="random"),
+            v2.RandomRotation(degrees=360),
+            v2.RandomResizedCrop(size=(IMAGE_SIZE, IMAGE_SIZE), scale=(0.8, 1.0), ratio=(0.9, 1.1)),
+            v2.RandomHorizontalFlip(p=0.5),
+            v2.RandomVerticalFlip(p=0.5),
+            v2.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 1.0)),
+            v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.0, hue=0.0),
+            v2.RandomGrayscale(p=0.8),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+            v2.RandomErasing(p=0.5, scale=(0.02, 0.15), ratio=(0.3, 3.3), value='random')
         ]
     )
 
