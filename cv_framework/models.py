@@ -22,6 +22,9 @@ def build_model(
     if model_name == "multicancernet_attention":
         return MultiCancerNet_Attention(num_classes=num_classes)
 
+    if model_name == "multicancernet_attention_hybrid":
+        return MultiCancerNet_Attention_Hybrid(num_classes=num_classes)
+
     if model_name != "resnet50_radimagenet":
         return timm.create_model(model_name, pretrained=pretrained, num_classes=num_classes)
 
@@ -93,61 +96,127 @@ class MultiCancerNet_Attention(nn.Module):
     def __init__(self, num_classes):
         super(MultiCancerNet_Attention, self).__init__()
 
-        # Block 1
+        # Bloco 1
         self.conv1 = nn.Conv2d(3, 32, 3, padding=1)
         self.bn1 = nn.BatchNorm2d(32)
         self.cbam1 = CBAM(32)
 
-        # Block 2
+        # Bloco 2
         self.conv2 = nn.Conv2d(32, 64, 3, padding=1)
         self.bn2 = nn.BatchNorm2d(64)
         self.cbam2 = CBAM(64)
 
-        # Block 3
+        # Bloco 3
         self.conv3 = nn.Conv2d(64, 128, 3, padding=1)
         self.bn3 = nn.BatchNorm2d(128)
         self.cbam3 = CBAM(128)
 
-        # Block 4
+        # Bloco 4
         self.conv4 = nn.Conv2d(128, 256, 3, padding=1)
         self.bn4 = nn.BatchNorm2d(256)
         self.cbam4 = CBAM(256)
 
-        # Pooling
+        # Camadas base compartilhadas
         self.pool = nn.MaxPool2d(2)
         self.relu = nn.ReLU()
 
-        # --- Classifier ---
-        self.flatten = nn.Flatten()
-        # Input calculation: 224 -> 112 -> 56 -> 28 -> 14. 256 channels * 14 * 14
-        self.fc1 = nn.Linear(256 * 14 * 14, 512)
+        # --- Novo Classificador Otimizado com GAP ---
+        self.gap = nn.AdaptiveAvgPool2d(1)  # Reduz a resolução (14x14) para (1x1) mantendo os 256 canais
+        self.flatten = nn.Flatten()         # Transforma o formato (256, 1, 1) em um vetor linear de (256)
+        self.fc1 = nn.Linear(256, 512)      # A entrada caiu de 50.176 para apenas 256!
         self.dropout = nn.Dropout(0.5)
         self.fc2 = nn.Linear(512, num_classes)
 
     def forward(self, x):
-        # Block 1
+        # Bloco 1
         x = self.relu(self.bn1(self.conv1(x)))
+        x = self.cbam1(x)  # Atenção aplicada na resolução rica antes do pooling
         x = self.pool(x)
-        x = self.cbam1(x)  # Apply Attention
 
-        # Block 2
+        # Bloco 2
         x = self.relu(self.bn2(self.conv2(x)))
+        x = self.cbam2(x)
         x = self.pool(x)
-        x = self.cbam2(x)  # Apply Attention
 
-        # Block 3
+        # Bloco 3
         x = self.relu(self.bn3(self.conv3(x)))
+        x = self.cbam3(x)
         x = self.pool(x)
-        x = self.cbam3(x)  # Apply Attention
 
-        # Block 4
+        # Bloco 4
         x = self.relu(self.bn4(self.conv4(x)))
+        x = self.cbam4(x)
         x = self.pool(x)
-        x = self.cbam4(x)  # Apply Attention
 
-        # Classifier
+        # Classificador Otimizado
+        x = self.gap(x)
         x = self.flatten(x)
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
         x = self.fc2(x)
+        return x
+
+
+class MultiCancerNet_Attention_Hybrid(nn.Module):
+    def __init__(self, num_classes, d_model=256, nhead=8, num_layers=2):
+        super(MultiCancerNet_Attention_Hybrid, self).__init__()
+
+        # --- 1. Extrator de Características Local (CNN Backbone) ---
+        self.cnn_backbone = nn.Sequential(
+            # Bloco 1
+            nn.Conv2d(3, 64, 3, padding=1), nn.BatchNorm2d(64), nn.ReLU(), nn.MaxPool2d(2),
+            # Bloco 2
+            nn.Conv2d(64, 128, 3, padding=1), nn.BatchNorm2d(128), nn.ReLU(), nn.MaxPool2d(2),
+            # Bloco 3
+            nn.Conv2d(128, d_model, 3, padding=1), nn.BatchNorm2d(d_model), nn.ReLU(), nn.MaxPool2d(2),
+            # Bloco 4
+            nn.Conv2d(d_model, d_model, 3, padding=1), nn.BatchNorm2d(d_model), nn.ReLU(), nn.MaxPool2d(2),
+
+            nn.AdaptiveAvgPool2d((14, 14))
+        )
+
+        # --- 2. Preparação para o Transformer (Tokenização) ---
+        self.num_patches = 14 * 14
+        self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches, d_model))
+
+        # --- 3. Transformer Encoder (O Cérebro Global) ---
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=d_model * 4,
+            activation="gelu",
+            batch_first=True,
+            dropout=0.1
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # --- 4. Classificador ---
+        self.fc1 = nn.Linear(d_model, 256)
+        self.dropout = nn.Dropout(0.5)
+        self.fc2 = nn.Linear(256, num_classes)
+
+    def forward(self, x):
+        # 1. Extração Convolucional Dinâmica
+        # Entrada: (B, 3, H, W) -> Saída Garantida: (B, 256, 14, 14)
+        x = self.cnn_backbone(x)
+
+        # 2. Flattening Espacial
+        B, C, H, W = x.shape
+        x = x.flatten(2)
+        x = x.transpose(1, 2)
+
+        # Adiciona a informação de posição de forma segura
+        x = x + self.pos_embedding
+
+        # 3. Processamento Global (Self-Attention)
+        x = self.transformer(x)
+
+        # 4. Global Average Pooling na dimensão dos tokens
+        x = x.mean(dim=1)
+
+        # 5. Classificação
+        x = torch.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+
         return x

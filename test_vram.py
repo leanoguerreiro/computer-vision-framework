@@ -104,15 +104,15 @@ if __name__ == "__main__":
     # "densenet169",
     # "convnext_base",
     # "efficientnetv2_m"
-    "mobilenetv3_large_100",
-    "mobilevit_s",
-    "efficientnet_b3",
-    "resnet50",
-    "swin_base_patch4_window7_224",
-    "convformer_s18",
-    "convnext_base",
-    "vit_base_patch16_224",
-    "maxvit_tiny_tf_224"
+    # "mobilenetv3_large_100",
+    # "mobilevit_s",
+    # "efficientnet_b3",
+    # "resnet50",
+    # "swin_base_patch4_window7_224",
+    # "convformer_s18",
+    # "convnext_base",
+    # "vit_base_patch16_224",
+    # "maxvit_tiny_tf_224"
 ]
 
     # Você pode alterar o batch_size aqui para testar o limite da RTX 3060
