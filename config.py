@@ -51,6 +51,8 @@ RADIMAGENET_WEIGHTS_URL = (
 )
 
 BENCHMARK_MODELS = (
+    "dinov2",
+    "dinov3",
     "multicancernet_attention_hybrid",
     "multicancernet_attention",
     "densenet201",

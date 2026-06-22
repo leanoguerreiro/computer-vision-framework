@@ -11,6 +11,45 @@ import torch.nn as nn
 import timm
 
 
+class DinoVisionTransformer(nn.Module):
+    """Wrapper robusto para integrar DINOv2/v3 perfeitamente ao pipeline de explicabilidade."""
+
+    def __init__(self, model_name: str, num_classes: int, freeze_backbone: bool = True):
+        super().__init__()
+        from transformers import AutoModel
+
+        if "dinov3" in model_name:
+            repo_id = "facebook/dinov3-vit-base"
+        else:
+            repo_id = "facebook/dinov2-base"
+
+        self.dino = AutoModel.from_pretrained(repo_id, output_attentions=True)
+
+        if freeze_backbone:
+            for param in self.dino.parameters():
+                param.requires_grad = False
+
+        self.embedding_dim = self.dino.config.hidden_size
+        self.fc = nn.Linear(self.embedding_dim, num_classes)
+
+    def forward_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Salva o seu script UMAP! Retorna o embedding puro (768) antes do classificador."""
+        outputs = self.dino(pixel_values=x)
+        # Retorna o token [CLS] (B, 768) para o UMAP mapear a morfologia real da célula
+        return outputs.last_hidden_state[:, 0, :]
+
+    def forward(self, x: torch.Tensor):
+        # Usamos o forward_features interno
+        features = self.forward_features(x)
+        return self.fc(features)
+
+    def get_last_self_attention(self, x: torch.Tensor) -> torch.Tensor:
+        """Substitui a necessidade de Hooks manuais complexos no seu pipeline."""
+        outputs = self.dino(pixel_values=x)
+        # outputs.attentions é uma tupla com as atenções de todas as camadas
+        # Pegamos a última camada [-1]: formato (batch_size, num_heads, sequence_length, sequence_length)
+        return outputs.attentions[-1]
+
 def build_model(
     model_name: str,
     num_classes: int,
@@ -18,6 +57,9 @@ def build_model(
     results_dir: Optional[str] = None,
     radimagenet_weights_url: Optional[str] = None,
 ) -> nn.Module:
+
+    if "dinov2" in model_name or "dinov3" in model_name:
+        return DinoVisionTransformer(model_name=model_name, num_classes=num_classes, freeze_backbone=True)
 
     if model_name == "multicancernet_attention":
         return MultiCancerNet_Attention(num_classes=num_classes)

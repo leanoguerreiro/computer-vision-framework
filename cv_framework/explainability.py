@@ -94,12 +94,34 @@ def generate_transformer_samples(
             with torch.no_grad():
                 pred_class = model(input_tensor).argmax(dim=1).item()
 
+            # --- ONDE ADICIONAR A VERIFICAÇÃO (BLOCO TRY) ---
             try:
-                attention_map = extract_attention_map(model, input_tensor)
+                if hasattr(model, 'get_last_self_attention'):
+                    # 1. Extrai o tensor bruto do DINOv2/v3: formato (1, num_heads, 197, 197)
+                    attn_tensors = model.get_last_self_attention(input_tensor)
+
+                    # 2. Filtra a atenção que sai do Token [CLS] (índice 0) para os 196 patches de imagem (índice 1 em diante)
+                    # Formato resultante: (num_heads, 196)
+                    cls_attn = attn_tensors[0, :, 0, 1:]
+
+                    # 3. Calcula a média aritmética entre todas as cabeças de atenção do Transformer
+                    # Formato resultante: (196,)
+                    mean_attn = cls_attn.mean(dim=0)
+
+                    # 4. Faz o reshape do vetor plano para a matriz espacial 2D compatível com o Grid (14x14)
+                    # Formato resultante: numpy array (14, 14)
+                    attention_map = mean_attn.reshape(14, 14).cpu().numpy()
+                else:
+                    # Mantém o comportamento original via Hooks para os modelos antigos (ex: MultiCancerNet)
+                    attention_map = extract_attention_map(model, input_tensor)
+
+                # Renderiza o mapa sobreposto à célula de leucemia
                 img_np, overlay = create_heatmap_overlay(input_tensor, attention_map)
+
             except Exception as exc:
                 print(f"  ⚠️ Erro ao processar atenção para classe {class_names[real_label]}: {exc}")
                 continue
+            # ------------------------------------------------
 
             # Plotagem simples
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
