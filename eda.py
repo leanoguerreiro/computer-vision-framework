@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from PIL import Image
 import numpy as np
+import math
+import random
 
 
 def realizar_eda(dataset_path):
@@ -30,6 +32,9 @@ def realizar_eda(dataset_path):
 
     print(f"Classes detectadas: {classes}")
     print("Coletando metadados das imagens...")
+
+    # Passar as classes dinâmicas para a função de amostra
+    exibir_amostras(dataset_path, classes, target_split='train')
 
     # 2. Coletar os dados
     for split in splits:
@@ -98,8 +103,7 @@ def realizar_eda(dataset_path):
     plt.tight_layout()
     plt.show()
 
-    # Passar as classes dinâmicas para a função de amostra
-    exibir_amostras(dataset_path, classes, target_split='train')
+
 
     return df
 
@@ -108,49 +112,81 @@ def exibir_amostras(dataset_path, classes, target_split='train'):
     num_classes = len(classes)
 
     if num_classes == 0:
+        print("Nenhuma classe encontrada para exibir amostras.")
         return
 
-    # A altura da figura cresce dinamicamente conforme o número de classes
-    fig, axes = plt.subplots(num_classes, 5, figsize=(20, 3 * num_classes))
+    # Define o layout da grade (5 colunas e calcula quantas linhas são necessárias)
+    cols = 5
+    rows = math.ceil(num_classes / cols)
 
-    # Se houver apenas 1 classe, axes é um array 1D. Precisamos lidar com isso.
+    # Cria a figura com um tamanho proporcional, garantindo imagens grandes
+    fig, axes = plt.subplots(rows, cols, figsize=(3.5 * cols, 3.5 * rows))
+
+    # Converte 'axes' para um array unidimensional (facilita o loop)
     if num_classes == 1:
         axes = [axes]
+    else:
+        axes = axes.flatten()
 
     for i, cls in enumerate(classes):
+        ax = axes[i]
         path = os.path.join(dataset_path, target_split, cls)
 
-        # Pega a linha atual de eixos (subplots)
-        ax_row = axes[i]
-
         if not os.path.exists(path):
-            for j in range(5):
-                ax_row[j].axis('off')
-                if j == 0:
-                    ax_row[j].set_title(f"{cls}\n(Sem imagens no split '{target_split}')")
+            ax.set_title(f"Classe: {cls}\n(Pasta ausente)", fontsize=10)
+            ax.axis('off')
             continue
 
-        # Pega apenas arquivos reais para não bugar com pastas escondidas
-        imgs = [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f)) and not f.startswith('.')][:5]
+        # Lista apenas arquivos válidos e ignora arquivos ocultos (como .DS_Store)
+        imgs = [
+            f
+            for f in os.listdir(path)
+            if os.path.isfile(os.path.join(path, f)) and not f.startswith('.')
+        ]
 
-        for j, img_name in enumerate(imgs):
-            img = Image.open(os.path.join(path, img_name))
-            ax_row[j].imshow(img, cmap='gray')
-            ax_row[j].set_title(f"{cls}\n{img.size}")
-            ax_row[j].axis('off')
+        if not imgs:
+            ax.set_title(
+                f"Classe: {cls}\n(Sem imagens em '{target_split}')", fontsize=10
+            )
+            ax.axis('off')
+            continue
 
-        # Limpa os eixos vazios caso a pasta tenha menos de 5 imagens
-        for j in range(len(imgs), 5):
-            ax_row[j].axis('off')
+        # Escolhe UMA imagem aleatória da lista
+        img_name = random.choice(imgs)
+        img_path = os.path.join(path, img_name)
 
-    plt.suptitle(f"Amostras do Dataset (Split: {target_split})", fontsize=16)
-    plt.tight_layout(rect=(0, 0.03, 1, 0.95))
+        try:
+            img = Image.open(img_path)
+            # Removemos o cmap='gray' para mostrar as cores originais da imagem
+            ax.imshow(img)
+            ax.set_title(
+                f"Classe: {cls}\nTam: {img.size[0]}x{img.size[1]} px",
+                fontsize=11,
+                fontweight='bold',
+            )
+        except Exception as e:
+            ax.set_title(f"Classe: {cls}\n(Erro de leitura)", fontsize=10)
+
+        ax.axis('off')  # Esconde os eixos X e Y
+
+    # Oculta os subplots que sobrarem vazios no final da grade
+    for j in range(num_classes, len(axes)):
+        axes[j].axis('off')
+
+    plt.suptitle(
+        f"Amostra Aleatória por Classe",
+        fontsize=16,
+        fontweight='bold',
+        y=0.98,
+    )
+    plt.tight_layout(rect=(0, 0, 1, 0.95))
     plt.show()
 
 
 if __name__ == "__main__":
     # Substitua pelo caminho do seu dataset atual
-    caminho_do_dataset = "datasets/terrain_split_70_20_10"  # Pode ser o mri_split_70_20_10 também!
+    caminho_do_dataset = "datasets/deepterrain_70_20_10"  # Pode ser o
+    # mri_split_70_20_10 também!
 
     df_meta = realizar_eda(caminho_do_dataset)
 

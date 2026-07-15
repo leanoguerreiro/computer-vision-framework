@@ -146,6 +146,10 @@ def generate_transformer_samples(
 
 def get_target_layer_for_cam(model: nn.Module, model_name: str) -> Optional[list]:
     """Identifica automaticamente a última camada convolucional para extração do Grad-CAM."""
+
+    if "dino_hybrid" in model_name:
+        return [model.conv_blocks[-1]]
+
     if "mobilenetv3" in model_name and hasattr(model, "blocks"):
         return [model.blocks[-1]]
     if "resnet" in model_name and hasattr(model, "layer4"):

@@ -21,6 +21,7 @@ from config import (
     ROBUSTNESS_DATASET_ROOT,
     ROBUSTNESS_PLOT_DIR,
     ROBUSTNESS_RESULTS_DIR,
+    DEFAULT_MODEL_NAME,
 )
 from cv_framework import (
     build_model,
@@ -35,9 +36,10 @@ warnings.filterwarnings("ignore", category=UserWarning)
 @dataclass
 class RobustnessConfig:
     """Configurações centralizadas para o teste de robustez."""
-    model: str = "resnet18"
+    model: str = DEFAULT_MODEL_NAME
     batch_size: int = DEFAULT_BATCH_SIZE
     seed: int = DEFAULT_SEED
+    weight_dir: Path = Path(ROBUSTNESS_RESULTS_DIR)
 
 class RobustnessEvaluator:
     """Orquestra a avaliação de um modelo treinado sob diferentes níveis de degradação."""
@@ -49,7 +51,7 @@ class RobustnessEvaluator:
         set_seed(self.config.seed)
 
         self.root_dir = Path(ROBUSTNESS_DATASET_ROOT)
-        self.results_dir = Path(ROBUSTNESS_RESULTS_DIR)
+        self.results_dir = config.weight_dir
         self.plot_dir = Path(ROBUSTNESS_PLOT_DIR)
         self.csv_path = Path(ROBUSTNESS_CSV_PATH)
 
@@ -168,8 +170,7 @@ class RobustnessEvaluator:
 
 if __name__ == "__main__":
     config = RobustnessConfig(
-        model="resnet18",
-        batch_size=32
+        weight_dir=Path("./results_standart/deepterrain_70_20_10")
     )
 
     try:

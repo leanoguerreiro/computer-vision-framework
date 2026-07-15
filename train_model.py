@@ -65,7 +65,20 @@ def train_single_model(model_name: str, batch_size: int, epochs: int, lr: float)
 
         print(f"\n✅ Treinamento finalizado. Resumo atualizado em: {csv_path}")
         with pl.Config(tbl_rows=1, tbl_cols=6):
-            print(df_new.select(["Modelo", "Train_F1-Macro", "Val_F1-Macro", "Test_F1-Macro", "Test_AUC-Macro"]))
+            print(df_new.select([
+                "Modelo",
+                "Val_F1-Macro",
+                "Train_F1-Macro",
+                "Test_F1-Macro",
+                "Train_Accuracy",
+                "Test_Accuracy",
+                "Train_MCC",
+                "Test_MCC",
+                "Train_AUC-Macro",
+                "Test_AUC-Macro",
+                "Test_Specificity",
+                "Test_MSE"
+            ]))
 
     except Exception as e:
         print(f"\n❌ Falha crítica encontrada durante o processo: {e}")

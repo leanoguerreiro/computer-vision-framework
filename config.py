@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -16,24 +17,24 @@ STANDARD_ROBUSTNESS_DIR = PROJECT_ROOT / "robustness_analysis_standart"
 DEFAULT_SEED = 42
 IMAGE_SIZE = 224
 DEFAULT_BATCH_SIZE = 32
-DEFAULT_EPOCHS = 3
+DEFAULT_EPOCHS = 100
 DEFAULT_LR = 1e-3
-DEFAULT_EARLY_STOPPING_PATIENCE = 2
+DEFAULT_EARLY_STOPPING_PATIENCE = 10
 DEFAULT_EARLY_STOPPING_MIN_DELTA = 0.001
 DEFAULT_TRAIN_WORKERS = 8
 DEFAULT_EVAL_WORKERS = 4
 DEFAULT_IMAGE_FOLDER_WORKERS = 8
 DEFAULT_VISUALIZATION_WORKERS = 4
-DEFAULT_MODEL_NAME = "densenet201"
+DEFAULT_MODEL_NAME = "convformer_s18"
 DEFAULT_BATCH_SIZE_TRAINING = 32
 DEFAULT_BATCH_SIZE_ROBUSTNESS = 16
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
-BENCHMARK_DATASET_ROOT = DATASETS_DIR / "MC_ALL_split_70_20_10"
-TRAINING_DATASET_ROOT = DATASETS_DIR / "MC_ALL_split_70_20_10"
-ROBUSTNESS_DATASET_ROOT = DATASETS_DIR / "MC_ALL_split_70_20_10"
+BENCHMARK_DATASET_ROOT = DATASETS_DIR / "deepterrain_70_20_10"
+TRAINING_DATASET_ROOT = DATASETS_DIR / "deepterrain_70_20_10"
+ROBUSTNESS_DATASET_ROOT = DATASETS_DIR / "deepterrain_70_20_10"
 
 BENCHMARK_PLOT_DIR = PLOTS_DIR / BENCHMARK_DATASET_ROOT.name
 BENCHMARK_RESULTS_DIR = RESULTS_DIR / BENCHMARK_DATASET_ROOT.name
@@ -52,11 +53,19 @@ RADIMAGENET_WEIGHTS_URL = (
 
 BENCHMARK_MODELS = (
     "dinov2",
-    "dinov3",
     "multicancernet_attention_hybrid",
     "multicancernet_attention",
     "densenet201",
     "mobilevit_s",
+    "mobilenetv3_large_100",
+    "resnet50",
+    "convformer_s18",
+    "efficientnet_b3",
+    "maxvit_tiny_tf_224",
+    "swin_tiny_patch4_window7_224",
+    "vit_base_patch16_224",
+    "convnext_base",
+    "swin_base_patch4_window7_224",
 )
 
 BENCHMARK_BATCH_SIZE_OVERRIDES = {
@@ -65,20 +74,20 @@ BENCHMARK_BATCH_SIZE_OVERRIDES = {
 }
 
 ROBUSTNESS_MODELS = (
-    "densenet201",
+    "dinov2",
     "multicancernet_attention_hybrid",
     "multicancernet_attention",
+    "densenet201",
     "mobilevit_s",
-    # "mobilenetv3_large_100",
-    # "mobilevit_s",
-    # "resnet50",
-    # "convformer_s18",
-    # "efficientnet_b3",
-    # "maxvit_tiny_tf_224",
-    # "swin_tiny_patch4_window7_224",
-    # "vit_base_patch16_224",
-    # "convnext_base",
-    # "swin_base_patch4_window7_224",
+    "mobilenetv3_large_100",
+    "resnet50",
+    "convformer_s18",
+    "efficientnet_b3",
+    "maxvit_tiny_tf_224",
+    "swin_tiny_patch4_window7_224",
+    "vit_base_patch16_224",
+    "convnext_base",
+    "swin_base_patch4_window7_224",
 )
 
 

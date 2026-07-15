@@ -9,14 +9,110 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import timm
+from transformers import AutoModel
 
+class DinoSpatialHybrid(nn.Module):
+    """
+    Combina extração semântica do DINOv2/v3 (ViT) com refinamento espacial
+    utilizando blocos pré-treinados de ConvNeXt ou ConvFormer (timm).
+    """
+    def __init__(
+        self,
+        dino_model_name: str = "facebook/dinov2-base",
+        head_model_name: str = "convnext_base.fb_in22k",
+        num_classes: int = 2,
+        freeze_backbone: bool = True,
+    ):
+        super().__init__()
+        
+        # 1. Carregamento do Backbone DINOv2 / DINOv3
+        repo_id = "facebook/dinov3-vit-base" if "dinov3" in dino_model_name else "facebook/dinov2-base"
+        self.dino = AutoModel.from_pretrained(repo_id, output_attentions=True)
+        
+        if freeze_backbone:
+            for param in self.dino.parameters():
+                param.requires_grad = False
+                
+        self.dino_dim = self.dino.config.hidden_size  # Ex: 768 para ViT-Base
+
+        # 2. Carregamento do Head (ConvNeXt/ConvFormer pré-treinado no timm)
+        # Criamos o modelo timm sem o classificador linear padrão (num_classes=0)
+        self.spatial_head = timm.create_model(head_model_name, pretrained=True, num_classes=0)
+        
+        # O ConvNeXt do timm é dividido em 'stem', 'stages' e 'head' (GAP + Norm).
+        # Como o DINO já fornece um mapa de resolução reduzida (ex: 14x14 ou 16x16),
+        # pulamos o stem (que faria downsampling 4x4 agressivo) e usamos os estágios finais.
+        if hasattr(self.spatial_head, "stages"):
+            # Identifica a dimensão de entrada do penúltimo estágio do ConvNeXt (Ex: 512 em convnext_base)
+            target_channels = self.spatial_head.stages[-2].blocks[0].conv_dw.in_channels
+            
+            # Projeção 1x1 para alinhar os 768 canais do DINO aos canais do ConvNeXt
+            self.channel_proj = nn.Conv2d(self.dino_dim, target_channels, kernel_size=1)
+            
+            # Usamos os últimos blocos convolucionais pré-treinados (Estágios 2 e 3)
+            self.conv_blocks = nn.Sequential(
+                self.spatial_head.stages[-2],
+                self.spatial_head.stages[-1]
+            )
+            head_out_dim = self.spatial_head.num_features
+        else:
+            # Fallback para outros modelos do timm: projeção direta e convolução espacial genérica
+            self.channel_proj = nn.Conv2d(self.dino_dim, 512, kernel_size=1)
+            self.conv_blocks = nn.Sequential(
+                nn.Conv2d(512, 512, kernel_size=3, padding=1, groups=512),  # Depthwise
+                nn.GELU(),
+                nn.Conv2d(512, 1024, kernel_size=1),                     # Pointwise
+                nn.AdaptiveAvgPool2d((1, 1))
+            )
+            head_out_dim = 1024
+
+        # 3. Pooling Global e Classificador Final
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(head_out_dim, num_classes)
+
+    def _extract_spatial_grid(self, x: torch.Tensor) -> torch.Tensor:
+        """Extrai tokens do DINO e converte para tensor espacial (B, C, H, W)."""
+        outputs = self.dino(pixel_values=x)
+        
+        # Pega todos os tokens exceto o [CLS] -> formato: (B, N_patches, 768)
+        patch_tokens = outputs.last_hidden_state[:, 1:, :]
+        
+        B, N, C = patch_tokens.shape
+        grid_size = int(math.sqrt(N))  # 14x14 para imagens 224x224 com patch_size=16 (ou 16x16 com patch_size=14)
+        
+        # Reshape e Permute: (B, H, W, C) -> (B, C, H, W)
+        spatial_map = patch_tokens.reshape(B, grid_size, grid_size, C).permute(0, 3, 1, 2)
+        return spatial_map
+
+    def forward_features(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Retorna o embedding final 1D antes da camada linear.
+        Garante compatibilidade total com plot_latent_space (UMAP) no explainability.py.
+        """
+        spatial_map = self._extract_spatial_grid(x)
+        projected_map = self.channel_proj(spatial_map)
+        conv_features = self.conv_blocks(projected_map)
+        
+        # Achata de (B, C, 1, 1) ou (B, C, H, W) para (B, C)
+        return self.global_pool(conv_features).flatten(1)
+
+    def forward(self, x: torch.Tensor):
+        features = self.forward_features(x)
+        return self.fc(features)
+
+    def get_last_self_attention(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Garante que o explainability.py consiga gerar os mapas de atenção
+        do Transformer normalmente através da função generate_transformer_samples.
+        """
+        outputs = self.dino(pixel_values=x)
+        return outputs.attentions[-1]
 
 class DinoVisionTransformer(nn.Module):
     """Wrapper robusto para integrar DINOv2/v3 perfeitamente ao pipeline de explicabilidade."""
 
     def __init__(self, model_name: str, num_classes: int, freeze_backbone: bool = True):
         super().__init__()
-        from transformers import AutoModel
 
         if "dinov3" in model_name:
             repo_id = "facebook/dinov3-vit-base"
@@ -57,6 +153,14 @@ def build_model(
     results_dir: Optional[str] = None,
     radimagenet_weights_url: Optional[str] = None,
 ) -> nn.Module:
+
+    if model_name == "dino_hybrid":
+        return DinoSpatialHybrid(
+            dino_model_name="facebook/dinov2-base",
+            head_model_name="convnext_base.fb_in22k",
+            num_classes=num_classes,
+            freeze_backbone=True
+        )
 
     if "dinov2" in model_name or "dinov3" in model_name:
         return DinoVisionTransformer(model_name=model_name, num_classes=num_classes, freeze_backbone=True)
