@@ -1,6 +1,4 @@
 .env
-
-
 datasets/*/train
 datasets/*/val
 datasets/*/test
