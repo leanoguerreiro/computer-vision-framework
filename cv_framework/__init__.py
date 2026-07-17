@@ -34,7 +34,7 @@ from .models import build_model
 from .training import (
     init_early_stopping,
     step_early_stopping,
-    train_kfold_fold,       # <--- Incluído nosso novo motor de K-Fold!
+    train_kfold_fold,
     train_model_pipeline,
 )
 from .metrics import (
@@ -45,7 +45,6 @@ from .metrics import (
 
 # --- 5. Interpretabilidade e Explicabilidade (XAI) ---
 from .explainability import (
-    create_heatmap_overlay,
     extract_attention_map,
     generate_gradcam_samples,
     generate_transformer_samples,
@@ -106,7 +105,6 @@ __all__ = [
     "run_inference",
 
     # Explicabilidade
-    "create_heatmap_overlay",
     "extract_attention_map",
     "generate_gradcam_samples",
     "generate_transformer_samples",

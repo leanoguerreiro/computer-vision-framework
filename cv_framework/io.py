@@ -1,4 +1,4 @@
-"""Manipulação de arquivos de resultados."""
+"""Manipulação de arquivos de resultados (Refatorado - Upsert nativo com Polars)."""
 
 from __future__ import annotations
 
@@ -7,23 +7,18 @@ import polars as pl
 
 
 def update_results_csv(df_new: pl.DataFrame, csv_path: Path) -> pl.DataFrame:
-    """Atualiza o arquivo CSV de forma funcional utilizando Polars."""
+    """Atualiza o arquivo CSV utilizando operação de Upsert nativa em multithread no Polars."""
+    csv_path = Path(csv_path)
+
     if csv_path.exists():
         df_old = pl.read_csv(csv_path)
-
-        # Extrai a lista de modelos como uma lista nativa do Python
-        trained_models = df_new["Modelo"].to_list()
-
-        # Filtra removendo os modelos que já foram treinados (upsert)
-        df_old = df_old.filter(~pl.col("Modelo").is_in(trained_models))
-
-        # Concatena os DataFrames verticalmente
-        df_final = pl.concat([df_old, df_new])
+        df_final = pl.concat([df_old, df_new]).unique(subset=["Modelo"], keep="last")
     else:
         df_final = df_new
 
-    # Ordena pelo F1-Macro decrescente e salva no disco
     df_final = df_final.sort("Test_F1-Macro", descending=True)
+
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
     df_final.write_csv(csv_path)
 
     return df_final

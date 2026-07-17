@@ -1,9 +1,12 @@
-from pathlib import Path
-from typing import List, Optional, Tuple
+"""Módulo de explicabilidade refatorado (Grad-CAM, Atenção, Espaço Latente -
+DRY)."""
 
+from pathlib import Path
+from typing import Callable, List, Optional
+
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import cv2
 import torch
 import torch.nn as nn
 import umap
@@ -14,116 +17,58 @@ from torch.utils.data import DataLoader
 
 from cv_framework.transforms import IMAGENET_MEAN, IMAGENET_STD
 
-"""Módulo focado na abertura da "caixa-preta" (Grad-CAM, Atenção, Espaço Latente)."""
 
-# --- Funções Puras de Processamento de Imagem/Tensor ---
+# =====================================================================
+# 1. HELPERS ATÔMICOS COMPARTILHADOS
+# =====================================================================
 
-def extract_attention_map(model: nn.Module, input_tensor: torch.Tensor) -> np.ndarray:
-    """Extrai a matriz de atenção da última camada do Transformer via Forward Pre-Hook."""
-    captured_inputs = []
-
-    def pre_hook(module, input_args):
-        captured_inputs.append(input_args[0].detach())
-
-    # Registra o hook
-    handle = model.transformer.layers[-1].self_attn.register_forward_pre_hook(pre_hook)
-
-    with torch.no_grad():
-        _ = model(input_tensor)
-
-    handle.remove()
-
-    # Força a extração dos pesos
-    qkv_input = captured_inputs[0]
-    _, attn_weights = model.transformer.layers[-1].self_attn(qkv_input, qkv_input, qkv_input, need_weights=True)
-
-    attention_matrix = attn_weights[0]
-    patch_attention = attention_matrix.mean(dim=0)
-    grid_size = int(np.sqrt(patch_attention.size(0)))
-    attention_map = patch_attention.reshape(grid_size, grid_size).detach().cpu().numpy()
-
-    # Normalização min-max
-    return (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min() + 1e-8)
+def _unnormalize_image(img_tensor: torch.Tensor) -> np.ndarray:
+    """Converte o tensor normalizado do PyTorch de volta para uma imagem RGB
+    visualizável."""
+    mean = np.array(IMAGENET_MEAN, dtype=np.float32)
+    std = np.array(IMAGENET_STD, dtype=np.float32)
+    img_np = img_tensor.cpu().numpy().transpose(1, 2, 0)
+    return np.clip(std * img_np + mean, 0, 1)
 
 
-def create_heatmap_overlay(input_tensor: torch.Tensor, attention_map: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Combina a matriz de atenção com a imagem original retornando as duas em formato visualizável."""
-    mean = np.array(IMAGENET_MEAN)
-    std = np.array(IMAGENET_STD)
-
-    # Processamento da Imagem Original
-    img_np = input_tensor[0].cpu().numpy().transpose(1, 2, 0)
-    img_np = np.asarray(np.clip(std * img_np + mean, 0, 1), dtype=np.float32)
-
-    # Criação do Heatmap (OpenCV)
-    attention_map_resized = cv2.resize(attention_map, (img_np.shape[1], img_np.shape[0]), interpolation=cv2.INTER_CUBIC)
-    heatmap = cv2.applyColorMap(np.uint8(255 * attention_map_resized), cv2.COLORMAP_JET)
-    heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-    heatmap = np.float32(heatmap) / 255
-
-    # Mistura: 60% calor, 40% imagem original
-    overlay = np.clip(heatmap * 0.6 + img_np * 0.4, 0, 1)
-
-    return img_np, overlay
-
-
-# --- Orquestradores de Interpretabilidade ---
-
-def generate_transformer_samples(
-        model: nn.Module, model_name: str, test_loader: DataLoader, device: torch.device,
-        plot_dir: Path, class_names: List[str], samples_per_class: int = 1
+def _sample_and_plot_loop(
+        model: nn.Module, model_name: str, test_loader: DataLoader,
+        device: torch.device,
+        plot_dir: Path, class_names: List[str], sub_dir: str, title_prefix: str,
+        overlay_fn: Callable[[torch.Tensor, int], np.ndarray],
+        samples_per_class: int = 1,
 ) -> None:
-    """Orquestrador que itera no dataset e salva os mapas de atenção do Transformer."""
-    out_dir = plot_dir / model_name / "transformer_attention"
+    """Orquestrador genérico que elimina a repetição de loops, contagem e
+    plotagem de amostras."""
+    out_dir = plot_dir / model_name / sub_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     model.eval()
 
-    counts_per_class = {i: 0 for i in range(len(class_names))}
+    counts = {i: 0 for i in range(len(class_names))}
 
     for inputs, labels in test_loader:
-        inputs = inputs.to(device)
-        labels = labels.to(device)
+        inputs, labels = inputs.to(device), labels.to(device)
 
         for i in range(inputs.size(0)):
             real_label = labels[i].item()
-
-            if counts_per_class[real_label] >= samples_per_class:
+            if counts[real_label] >= samples_per_class:
                 continue
 
             input_tensor = inputs[i].unsqueeze(0)
             with torch.no_grad():
                 pred_class = model(input_tensor).argmax(dim=1).item()
 
-            # --- ONDE ADICIONAR A VERIFICAÇÃO (BLOCO TRY) ---
             try:
-                if hasattr(model, 'get_last_self_attention'):
-                    # 1. Extrai o tensor bruto do DINOv2/v3: formato (1, num_heads, 197, 197)
-                    attn_tensors = model.get_last_self_attention(input_tensor)
-
-                    # 2. Filtra a atenção que sai do Token [CLS] (índice 0) para os 196 patches de imagem (índice 1 em diante)
-                    # Formato resultante: (num_heads, 196)
-                    cls_attn = attn_tensors[0, :, 0, 1:]
-
-                    # 3. Calcula a média aritmética entre todas as cabeças de atenção do Transformer
-                    # Formato resultante: (196,)
-                    mean_attn = cls_attn.mean(dim=0)
-
-                    # 4. Faz o reshape do vetor plano para a matriz espacial 2D compatível com o Grid (14x14)
-                    # Formato resultante: numpy array (14, 14)
-                    attention_map = mean_attn.reshape(14, 14).cpu().numpy()
-                else:
-                    # Mantém o comportamento original via Hooks para os modelos antigos (ex: MultiCancerNet)
-                    attention_map = extract_attention_map(model, input_tensor)
-
-                # Renderiza o mapa sobreposto à célula de leucemia
-                img_np, overlay = create_heatmap_overlay(input_tensor, attention_map)
-
+                img_np = _unnormalize_image(input_tensor[0])
+                overlay = overlay_fn(input_tensor, pred_class, img_np)
             except Exception as exc:
-                print(f"  ⚠️ Erro ao processar atenção para classe {class_names[real_label]}: {exc}")
+                print(
+                    f"  ⚠️ Erro em {sub_dir} para classe "
+                    f"{class_names[real_label]}: {exc}",
+                )
                 continue
-            # ------------------------------------------------
 
-            # Plotagem simples
+            # Plotagem lado a lado padronizada
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
             ax1.imshow(img_np)
             ax1.set_title(f"Original (Real: {class_names[real_label]})")
@@ -131,34 +76,118 @@ def generate_transformer_samples(
 
             color_text = "darkgreen" if real_label == pred_class else "darkred"
             ax2.imshow(overlay)
-            ax2.set_title(f"Foco Híbrido (Pred: {class_names[pred_class]})", color=color_text, fontweight="bold")
+            ax2.set_title(
+                f"{title_prefix} (Pred: {class_names[pred_class]})",
+                color=color_text, fontweight="bold",
+            )
             ax2.axis("off")
 
             fig.tight_layout()
-            counts_per_class[real_label] += 1
-            file_name = f"{class_names[real_label].replace(' ', '_')}_sample_{counts_per_class[real_label]}_attn.png"
+            counts[real_label] += 1
+            file_name = (
+                f"{class_names[real_label].replace(' ', '_')}_sample_"
+                f"{counts[real_label]}_{sub_dir}.png")
             fig.savefig(out_dir / file_name, bbox_inches="tight")
             plt.close(fig)
 
-            if all(count >= samples_per_class for count in counts_per_class.values()):
+            if all(c >= samples_per_class for c in counts.values()):
                 return
 
 
-def get_target_layer_for_cam(model: nn.Module, model_name: str) -> Optional[list]:
-    """Identifica automaticamente a última camada convolucional para extração do Grad-CAM."""
+# =====================================================================
+# 2. FUNÇÕES DE ATENÇÃO DO TRANSFORMER
+# =====================================================================
 
+def extract_attention_map(
+        model: nn.Module, input_tensor: torch.Tensor,
+) -> np.ndarray:
+    """Extrai a matriz de atenção via Forward Pre-Hook para modelos legados."""
+    captured_inputs = []
+
+    def pre_hook(module, input_args):
+        captured_inputs.append(input_args[0].detach())
+
+    handle = model.transformer.layers[-1].self_attn.register_forward_pre_hook(
+        pre_hook,
+    )
+    with torch.no_grad():
+        _ = model(input_tensor)
+    handle.remove()
+
+    qkv_input = captured_inputs[0]
+    _, attn_weights = model.transformer.layers[-1].self_attn(
+        qkv_input, qkv_input, qkv_input, need_weights=True,
+    )
+    patch_attention = attn_weights[0].mean(dim=0)
+    grid_size = int(np.sqrt(patch_attention.size(0)))
+    attention_map = patch_attention.reshape(
+        grid_size, grid_size,
+    ).detach().cpu().numpy()
+
+    return (attention_map - attention_map.min()) / (
+            attention_map.max() - attention_map.min() + 1e-8)
+
+
+def generate_transformer_samples(
+        model: nn.Module, model_name: str, test_loader: DataLoader,
+        device: torch.device,
+        plot_dir: Path, class_names: List[str], samples_per_class: int = 1,
+) -> None:
+    """Orquestra a geração dos mapas de atenção do Transformer (compatível
+    com DINOv3)."""
+
+    def _transformer_overlay(
+            input_tensor: torch.Tensor, pred_class: int, img_np: np.ndarray,
+    ) -> np.ndarray:
+        if hasattr(model, 'get_last_self_attention'):
+            attn_tensors = model.get_last_self_attention(input_tensor)
+            # Fatiamento negativo (-196:) é à prova de falhas contra Register
+            # Tokens do DINOv3!
+            cls_attn = attn_tensors[0, :, 0, -196:]
+            attention_map = cls_attn.mean(dim=0).reshape(14, 14).cpu().numpy()
+        else:
+            attention_map = extract_attention_map(model, input_tensor)
+
+        attention_resized = cv2.resize(
+            attention_map, (img_np.shape[1], img_np.shape[0]),
+            interpolation=cv2.INTER_CUBIC,
+        )
+        heatmap = cv2.applyColorMap(
+            np.uint8(255 * attention_resized), cv2.COLORMAP_JET,
+        )
+        heatmap = np.float32(cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)) / 255
+        return np.clip(heatmap * 0.6 + img_np * 0.4, 0, 1)
+
+    _sample_and_plot_loop(
+        model, model_name, test_loader, device, plot_dir, class_names,
+        sub_dir="transformer_attention", title_prefix="Foco Híbrido",
+        overlay_fn=_transformer_overlay, samples_per_class=samples_per_class,
+    )
+
+
+# =====================================================================
+# 3. GRAD-CAM
+# =====================================================================
+
+def get_target_layer_for_cam(model: nn.Module, model_name: str) -> Optional[
+    list]:
+    """Identifica automaticamente a última camada convolucional para extração
+    do Grad-CAM."""
     if "dino_hybrid" in model_name:
         return [model.conv_blocks[-1]]
-
     if "mobilenetv3" in model_name and hasattr(model, "blocks"):
         return [model.blocks[-1]]
     if "resnet" in model_name and hasattr(model, "layer4"):
         return [model.layer4[-1]]
-    if "densenet" in model_name and hasattr(model, "features") and hasattr(model.features, "norm5"):
+    if "densenet" in model_name and hasattr(model, "features") and hasattr(
+            model.features, "norm5",
+    ):
         return [model.features.norm5]
     if "efficientnet" in model_name and hasattr(model, "blocks"):
         return [model.blocks[-1]]
-    if "multicancernet_attention" in model_name.lower() or hasattr(model, "cbam4"):
+    if "multicancernet_attention" in model_name.lower() or hasattr(
+            model, "cbam4",
+    ):
         return [model.cbam4]
 
     for _, module in reversed(list(model.named_modules())):
@@ -168,86 +197,59 @@ def get_target_layer_for_cam(model: nn.Module, model_name: str) -> Optional[list
 
 
 def generate_gradcam_samples(
-        model: nn.Module, model_name: str, test_loader: DataLoader, device: torch.device,
-        plot_dir: Path, class_names: List[str], samples_per_class: int = 1
+        model: nn.Module, model_name: str, test_loader: DataLoader,
+        device: torch.device,
+        plot_dir: Path, class_names: List[str], samples_per_class: int = 1,
 ) -> None:
-    """Gera visualizações do Grad-CAM garantindo amostras de TODAS as classes."""
+    """Orquestra a geração de visualizações do Grad-CAM."""
     target_layers = get_target_layer_for_cam(model, model_name)
     if not target_layers:
-        print(f"  ⚠️  Grad-CAM pulado para {model_name}: não foi possível identificar a target layer.")
+        print(
+            f"  ⚠️ Grad-CAM pulado para {model_name}: target layer não "
+            f"encontrada.",
+        )
         return
-
-    out_dir = plot_dir / model_name / "gradcam"
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         cam = GradCAM(model=model, target_layers=target_layers)
     except Exception as exc:
-        print(f"  ⚠️  Erro ao inicializar Grad-CAM para {model_name}: {exc}")
+        print(f"  ⚠️ Erro ao inicializar Grad-CAM para {model_name}: {exc}")
         return
 
-    model.eval()
-    mean = np.array(IMAGENET_MEAN)
-    std = np.array(IMAGENET_STD)
-    counts_per_class = {i: 0 for i in range(len(class_names))}
+    def _gradcam_overlay(
+            input_tensor: torch.Tensor, pred_class: int, img_np: np.ndarray,
+    ) -> np.ndarray:
+        grayscale_cam = cam(
+            input_tensor=input_tensor,
+            targets=[ClassifierOutputTarget(pred_class)],
+        )[0, :]
+        return show_cam_on_image(
+            img_np, np.asarray(grayscale_cam, dtype=np.float32), use_rgb=True,
+        )
 
-    for inputs, labels in test_loader:
-        inputs = inputs.to(device)
-        labels = labels.to(device)
-
-        for i in range(inputs.size(0)):
-            real_label = labels[i].item()
-
-            if counts_per_class[real_label] >= samples_per_class:
-                continue
-
-            input_tensor = inputs[i].unsqueeze(0)
-
-            with torch.no_grad():
-                output = model(input_tensor)
-                pred_class = output.argmax(dim=1).item()
-
-            cam_targets = [ClassifierOutputTarget(pred_class)]
-            try:
-                grayscale_cam = cam(input_tensor=input_tensor, targets=cam_targets)[0, :]
-            except Exception as exc:
-                print(f"  ⚠️  Erro ao gerar Grad-CAM para classe {class_names[real_label]}: {exc}")
-                continue
-
-            img_np = input_tensor[0].cpu().numpy().transpose(1, 2, 0)
-            img_np = np.asarray(np.clip(std * img_np + mean, 0, 1), dtype=np.float32)
-            grayscale_cam = np.asarray(grayscale_cam, dtype=np.float32)
-
-            cam_image = show_cam_on_image(img_np, grayscale_cam, use_rgb=True)
-
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
-            ax1.imshow(img_np)
-            ax1.set_title(f"Original (Real: {class_names[real_label]})")
-            ax1.axis("off")
-
-            color_text = "darkgreen" if real_label == pred_class else "darkred"
-            ax2.imshow(cam_image)
-            ax2.set_title(f"Grad-CAM (Pred: {class_names[pred_class]})", color=color_text, fontweight="bold")
-            ax2.axis("off")
-
-            fig.tight_layout()
-            counts_per_class[real_label] += 1
-            file_name = f"{class_names[real_label].replace(' ', '_')}_sample_{counts_per_class[real_label]}_cam.png"
-            fig.savefig(out_dir / file_name, bbox_inches="tight")
-            plt.close(fig)
-
-            if all(count >= samples_per_class for count in counts_per_class.values()):
-                return
+    _sample_and_plot_loop(
+        model, model_name, test_loader, device, plot_dir, class_names,
+        sub_dir="gradcam", title_prefix="Grad-CAM",
+        overlay_fn=_gradcam_overlay, samples_per_class=samples_per_class,
+    )
 
 
-def plot_latent_space(model: nn.Module, model_name: str, test_loader: DataLoader, device: torch.device, plot_dir: Path,
-                      class_names: List[str], seed: int) -> None:
-    """Gera a projeção UMAP do espaço latente da última camada de características."""
-    print(f"  🌌 Gerando projeção do Espaço Latente (UMAP) para {model_name}...")
+# =====================================================================
+# 4. ESPAÇO LATENTE (UMAP)
+# =====================================================================
+
+def plot_latent_space(
+        model: nn.Module, model_name: str, test_loader: DataLoader,
+        device: torch.device,
+        plot_dir: Path, class_names: List[str], seed: int,
+) -> None:
+    """Gera a projeção UMAP com proteção contra datasets pequenos."""
+    print(
+        f"  🌌 Gerando projeção do Espaço Latente (UMAP) para "
+        f"{model_name}...",
+    )
     model.eval()
     features, labels_list = [], []
-    out_dir = plot_dir / model_name
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     with torch.no_grad():
         for inputs, labels in test_loader:
@@ -267,7 +269,13 @@ def plot_latent_space(model: nn.Module, model_name: str, test_loader: DataLoader
     features_np = np.vstack(features)
     labels_np = np.array(labels_list)
 
-    reducer = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1)
+    # Proteção de vizinhos dinâmica (evita avisos se rodar testes com batch
+    # pequeno)
+    safe_neighbors = min(15, max(2, features_np.shape[0] - 1))
+    reducer = umap.UMAP(
+        random_state=seed, n_neighbors=safe_neighbors, min_dist=0.1,
+    )
+
     try:
         embedding = reducer.fit_transform(features_np)
     except Exception as exc:
@@ -275,8 +283,10 @@ def plot_latent_space(model: nn.Module, model_name: str, test_loader: DataLoader
         return
 
     fig, ax = plt.subplots(figsize=(10, 8))
-    scatter = ax.scatter(embedding[:, 0], embedding[:, 1], c=labels_np, cmap="coolwarm", alpha=0.7, s=50,
-                         edgecolors="k")
+    scatter = ax.scatter(
+        embedding[:, 0], embedding[:, 1], c=labels_np, cmap="coolwarm",
+        alpha=0.7, s=50, edgecolors="k",
+    )
     handles, _ = scatter.legend_elements()
 
     ax.legend(handles, class_names, title="Classes")
@@ -284,6 +294,8 @@ def plot_latent_space(model: nn.Module, model_name: str, test_loader: DataLoader
     ax.set_xlabel("UMAP Dimensão 1")
     ax.set_ylabel("UMAP Dimensão 2")
 
+    out_dir = plot_dir / model_name
+    out_dir.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
     fig.savefig(out_dir / "umap_latent_space.png", dpi=300)
     plt.close(fig)

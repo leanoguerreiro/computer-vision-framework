@@ -1,9 +1,10 @@
 """Agrupa os recursos de configuração injetáveis para o framework."""
 
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 
 @dataclass(frozen=True)
@@ -22,9 +23,13 @@ class BenchmarkContext:
     train_workers: int = 8
     eval_workers: int = 4
     seed: int = 42
+    weight_decay: float = 3e-4
+    patience_scheduler: int = 2
+    min_lr: float = 1e-6
 
     # Injeção de configurações específicas do modelo
     radimagenet_weights_url: str = (
-        "https://huggingface.co/BMEII/RadImageNet/resolve/main/RadImageNet-ResNet50_notop.pth"
+        "https://huggingface.co/BMEII/RadImageNet/resolve/main/RadImageNet"
+        "-ResNet50_notop.pth"
     )
     batch_size_overrides: Dict[str, int] = field(default_factory=dict)

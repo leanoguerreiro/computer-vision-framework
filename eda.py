@@ -115,16 +115,28 @@ def exibir_amostras(dataset_path, classes, target_split='train'):
         print("Nenhuma classe encontrada para exibir amostras.")
         return
 
-    # Define o layout da grade (5 colunas e calcula quantas linhas são necessárias)
-    cols = 5
-    rows = math.ceil(num_classes / cols)
+    # Define o número de colunas de forma dinâmica
+    MAX_COLS = 5
+    if num_classes <= MAX_COLS:
+        cols = num_classes
+        rows = 1
+    else:
+        # Se houver mais classes, use o número máximo de colunas e calcule as linhas
+        cols = MAX_COLS
+        rows = math.ceil(num_classes / cols)
 
-    # Cria a figura com um tamanho proporcional, garantindo imagens grandes
-    fig, axes = plt.subplots(rows, cols, figsize=(3.5 * cols, 3.5 * rows))
+    # Cria a figura com um tamanho proporcional
+    # Aumentamos um pouco o multiplicador de largura para as imagens ficarem maiores e o layout mais apertado
+    width_per_col = 4.0
+    height_per_row = 3.5
+    fig, axes = plt.subplots(rows, cols, figsize=(width_per_col * cols, height_per_row * rows))
 
-    # Converte 'axes' para um array unidimensional (facilita o loop)
+    # Converte 'axes' para um array unidimensional para facilitar o loop
     if num_classes == 1:
         axes = [axes]
+    elif rows == 1 or cols == 1:
+        # Se for uma única linha ou coluna, não precisa de flatten (depende da versão do matplotlib, mas essa é uma boa prática)
+        axes = axes
     else:
         axes = axes.flatten()
 
@@ -137,7 +149,6 @@ def exibir_amostras(dataset_path, classes, target_split='train'):
             ax.axis('off')
             continue
 
-        # Lista apenas arquivos válidos e ignora arquivos ocultos (como .DS_Store)
         imgs = [
             f
             for f in os.listdir(path)
@@ -151,14 +162,14 @@ def exibir_amostras(dataset_path, classes, target_split='train'):
             ax.axis('off')
             continue
 
-        # Escolhe UMA imagem aleatória da lista
         img_name = random.choice(imgs)
         img_path = os.path.join(path, img_name)
 
         try:
             img = Image.open(img_path)
             # Removemos o cmap='gray' para mostrar as cores originais da imagem
-            ax.imshow(img)
+            # Adicionamos interpolation='none' para evitar suavização artificial na exibição
+            ax.imshow(img, aspect='equal', interpolation='none')
             ax.set_title(
                 f"Classe: {cls}\nTam: {img.size[0]}x{img.size[1]} px",
                 fontsize=11,
@@ -180,12 +191,14 @@ def exibir_amostras(dataset_path, classes, target_split='train'):
         y=0.98,
     )
     plt.tight_layout(rect=(0, 0, 1, 0.95))
+    # Em alguns casos, pode ser necessário forçar um layout mais apertado após o preenchimento
+    # plt.tight_layout(pad=0) # Tente isso se ainda houver problemas
     plt.show()
 
 
 if __name__ == "__main__":
     # Substitua pelo caminho do seu dataset atual
-    caminho_do_dataset = "datasets/deepterrain_70_20_10"  # Pode ser o
+    caminho_do_dataset = "datasets/MC_ALL_split_70_20_10"  # Pode ser o
     # mri_split_70_20_10 também!
 
     df_meta = realizar_eda(caminho_do_dataset)

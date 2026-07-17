@@ -49,15 +49,17 @@ VISUALIZATION_ROBUSTNESS_DIR = STANDARD_ROBUSTNESS_DIR / TRAINING_DATASET_ROOT.n
 # 3. HIPERPARÂMETROS DE TREINAMENTO (DEFAULTS)
 # =====================================================================
 DEFAULT_SEED = 42
-DEFAULT_EPOCHS = 25
-DEFAULT_LR = 1e-3
-
+DEFAULT_EPOCHS = 50
+DEFAULT_LR = 3e-3
+DEFAULT_WEIGHT_DECAY = 1e-2
+DEFAULT_SCHEDULER_PATIENCE = 2
+DEFAULT_SCHEDULER_MIN_LR = 1e-6
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_BATCH_SIZE_TRAINING = DEFAULT_BATCH_SIZE
 DEFAULT_BATCH_SIZE_ROBUSTNESS = 16
 
 # Early Stopping
-DEFAULT_EARLY_STOPPING_PATIENCE = 5
+DEFAULT_EARLY_STOPPING_PATIENCE = 7
 DEFAULT_EARLY_STOPPING_MIN_DELTA = 0.001
 
 
@@ -81,20 +83,37 @@ RADIMAGENET_WEIGHTS_URL = (
 )
 
 BENCHMARK_MODELS = (
+
+    "cbam_attention",
+    "cbam_attention_hybrid",
+
+    # Transformers Puros
+    "dinov3",
     "dinov2",
-    "all_attention_hybrid",
-    "all_attention",
-    "densenet201",
+
+
+    # Híbridos Universais
+    "dinov2_mobilenet_hybrid",
+    "dinov3_mobilenet_hybrid",
+    "dinov2_efficientnet_hybrid",
+    "dinov3_efficientnet_hybrid",
+
+
+
     "mobilevit_s",
     "mobilenetv3_large_100",
-    "resnet50",
-    "convformer_s18",
+
     "efficientnet_b3",
-    "maxvit_tiny_tf_224",
+    # "dino_efficientnet_hybrid",
+    "densenet201",
+
+    "resnet50",
+    "convnext_tiny",
     "swin_tiny_patch4_window7_224",
+    "convformer_s18",
+
     "vit_base_patch16_224",
-    "convnext_base",
-    "swin_base_patch4_window7_224",
+    "dinov2",
 )
 
 # Reaproveita a mesma tupla para evitar divergências na manutenção
