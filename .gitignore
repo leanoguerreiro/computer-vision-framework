@@ -4,7 +4,7 @@ datasets/*/val
 datasets/*/test
 *.pth
 *.lock
-
+plots/*
 plots
 plots_standart
 data
