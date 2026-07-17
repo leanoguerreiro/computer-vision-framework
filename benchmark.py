@@ -23,6 +23,7 @@ from config import (
     DEFAULT_LR,
     DEFAULT_SEED,
     RADIMAGENET_WEIGHTS_URL,
+    ATTENTION_BASED_MODELS,
 )
 
 # Importações do framework agnóstico
@@ -52,7 +53,8 @@ def run_benchmark(models: Iterable[str] = BENCHMARK_MODELS, context: Optional[Be
         eval_workers=DEFAULT_EVAL_WORKERS,
         seed=DEFAULT_SEED,
         radimagenet_weights_url=RADIMAGENET_WEIGHTS_URL,
-        batch_size_overrides=BENCHMARK_BATCH_SIZE_OVERRIDES
+        batch_size_overrides=BENCHMARK_BATCH_SIZE_OVERRIDES,
+        attention_based_models=ATTENTION_BASED_MODELS
     )
 
     ctx.plot_dir.mkdir(parents=True, exist_ok=True)

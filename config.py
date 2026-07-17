@@ -50,7 +50,7 @@ VISUALIZATION_ROBUSTNESS_DIR = STANDARD_ROBUSTNESS_DIR / TRAINING_DATASET_ROOT.n
 # =====================================================================
 DEFAULT_SEED = 42
 DEFAULT_EPOCHS = 50
-DEFAULT_LR = 3e-3
+DEFAULT_LR = 1e-3
 DEFAULT_WEIGHT_DECAY = 1e-2
 DEFAULT_SCHEDULER_PATIENCE = 2
 DEFAULT_SCHEDULER_MIN_LR = 1e-6
@@ -81,6 +81,14 @@ RADIMAGENET_WEIGHTS_URL = (
     "https://huggingface.co/BMEII/RadImageNet/resolve/main/"
     "RadImageNet-ResNet50_notop.pth"
 )
+
+ATTENTION_BASED_MODELS = frozenset({
+    "dinov3",
+    "dinov2",
+    "vit_base_patch16_224",
+    "swin_tiny_patch4_window7_224",
+    "cbam_attention_hybrid",
+})
 
 BENCHMARK_MODELS = (
 
@@ -113,7 +121,6 @@ BENCHMARK_MODELS = (
     "convformer_s18",
 
     "vit_base_patch16_224",
-    "dinov2",
 )
 
 # Reaproveita a mesma tupla para evitar divergências na manutenção

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict
+from typing import Dict, FrozenSet
 
 
 @dataclass(frozen=True)
@@ -33,3 +33,5 @@ class BenchmarkContext:
         "-ResNet50_notop.pth"
     )
     batch_size_overrides: Dict[str, int] = field(default_factory=dict)
+
+    attention_based_models: FrozenSet[str] = field(default_factory=frozenset)

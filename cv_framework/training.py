@@ -3,7 +3,7 @@ from __future__ import annotations
 import gc
 import time
 from pathlib import Path
-from typing import TypedDict, Tuple, List, Optional
+from typing import TypedDict, Tuple, List, Optional, FrozenSet
 
 import numpy as np
 import torch
@@ -108,7 +108,7 @@ def train_one_epoch(
         outputs = model(inputs)
         loss = criterion(outputs, labels)
         loss.backward()
-
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         if scheduler:
             scheduler.step()
@@ -167,13 +167,14 @@ def generate_post_training_visualizations(
         plot_dir: Path,
         class_names: List[str],
         seed: int,
+        attention_based_models: FrozenSet[str],
 ) -> None:
     """Roteia e gera as visualizações de interpretabilidade e espaço latente."""
     plot_latent_space(
         model, model_name, test_loader, device, plot_dir, class_names, seed,
     )
 
-    if hasattr(model, 'transformer'):
+    if model_name in attention_based_models:
         print(
             f"  🧠 Arquitetura Transformer detectada para {model_name}. "
             f"Gerando mapas de atenção...",
@@ -226,7 +227,7 @@ def _setup_training_components(
     )
 
     weights = build_class_weights(targets, num_classes, device)
-    criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=0.1)
+    criterion = nn.CrossEntropyLoss(weight=weights)
 
     optimizer = optim.AdamW(
         model.parameters(),
@@ -404,7 +405,7 @@ def train_model_pipeline(
 
     generate_post_training_visualizations(
         model, model_name, test_loader, device, context.plot_dir, class_names,
-        context.seed
+        context.seed, context.attention_based_models
     )
 
     _free_gpu_memory(model)

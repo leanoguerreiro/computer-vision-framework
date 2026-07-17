@@ -6,9 +6,29 @@ from PIL import Image
 import numpy as np
 import math
 import random
+import torch
+from cv_framework.data import setup_data_loaders
+from cv_framework.context import BenchmarkContext
+from config import (
+    DEFAULT_SEED,
+    DEFAULT_EPOCHS,
+    DEFAULT_LR,
+    DEFAULT_WEIGHT_DECAY,
+    DEFAULT_EARLY_STOPPING_PATIENCE,
+    DEFAULT_EARLY_STOPPING_MIN_DELTA,
+    DEFAULT_TRAIN_WORKERS,
+    DEFAULT_EVAL_WORKERS,
+    RADIMAGENET_WEIGHTS_URL,
+    BENCHMARK_BATCH_SIZE_OVERRIDES,
+    BENCHMARK_RESULTS_DIR,
+    BENCHMARK_PLOT_DIR,
+    BENCHMARK_DATASET_ROOT,
+    DEFAULT_BATCH_SIZE,
+)
 
 
-def realizar_eda(dataset_path):
+def realizar_eda(dataset_path, ctx):
+    visualizar_pipeline_treino(ctx)
     data = []
     splits = ['train', 'val', 'test']
 
@@ -196,14 +216,61 @@ def exibir_amostras(dataset_path, classes, target_split='train'):
     plt.show()
 
 
+def visualizar_pipeline_treino(context, batch_size=4):
+    """Visualiza como o DataLoader processa as imagens com as transformações."""
+    print(
+        "\n🔍 Visualizando imagens após transformações do pipeline de treino..."
+        )
+
+    # Configura loaders (usa o contexto para num_workers, etc)
+    (train_loader, _, _), class_names = setup_data_loaders(context, batch_size)
+
+    # Pega um batch
+    images, labels = next(iter(train_loader))
+
+    # Desnormaliza (usando os valores do seu config.py)
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+    fig, axes = plt.subplots(1, batch_size, figsize=(20, 5))
+    for i in range(batch_size):
+        img = images[i] * std + mean  # Reverte normalização
+        img = img.permute(1, 2, 0).clip(0, 1).numpy()
+
+        axes[i].imshow(img)
+        axes[i].set_title(f"Label: {class_names[labels[i]]}", fontsize=10)
+        axes[i].axis('off')
+
+    plt.suptitle("Exemplos do DataLoader (Pós-Transformações)", fontsize=16)
+    plt.tight_layout()
+    plt.show()
+
 if __name__ == "__main__":
     # Substitua pelo caminho do seu dataset atual
-    caminho_do_dataset = "datasets/MC_ALL_split_70_20_10"  # Pode ser o
-    # mri_split_70_20_10 também!
+    caminho_do_dataset = BENCHMARK_DATASET_ROOT
 
-    df_meta = realizar_eda(caminho_do_dataset)
+    ctx = BenchmarkContext(
+        root_dir=caminho_do_dataset,
+        plot_dir=BENCHMARK_PLOT_DIR,
+        results_dir=BENCHMARK_RESULTS_DIR,
+        batch_size=DEFAULT_BATCH_SIZE,
+        num_epochs=DEFAULT_EPOCHS,
+        learning_rate=DEFAULT_LR,
+        weight_decay=DEFAULT_WEIGHT_DECAY,
+        patience=DEFAULT_EARLY_STOPPING_PATIENCE,
+        min_delta=DEFAULT_EARLY_STOPPING_MIN_DELTA,
+        train_workers=DEFAULT_TRAIN_WORKERS,
+        eval_workers=DEFAULT_EVAL_WORKERS,
+        seed=DEFAULT_SEED,
+        radimagenet_weights_url=RADIMAGENET_WEIGHTS_URL,
+        batch_size_overrides=BENCHMARK_BATCH_SIZE_OVERRIDES
+    )
+
+    df_meta = realizar_eda(caminho_do_dataset, ctx)
 
     if not df_meta.empty:
+
+
         print("\nResumo Estatístico do Brilho (por classe):")
         print(df_meta.groupby('class')['brightness'].describe())
 

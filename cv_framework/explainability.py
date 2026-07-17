@@ -143,8 +143,16 @@ def generate_transformer_samples(
             attn_tensors = model.get_last_self_attention(input_tensor)
             # Fatiamento negativo (-196:) é à prova de falhas contra Register
             # Tokens do DINOv3!
-            cls_attn = attn_tensors[0, :, 0, -196:]
-            attention_map = cls_attn.mean(dim=0).reshape(14, 14).cpu().numpy()
+            num_tokens = attn_tensors.shape[-1]
+            grid_dim = int(np.sqrt(num_tokens)) if int(
+                np.sqrt(num_tokens)
+                ) ** 2 == num_tokens else int(np.sqrt(num_tokens - 5))
+            num_patches = grid_dim * grid_dim
+
+            cls_attn = attn_tensors[0, :, 0, -num_patches:]
+            attention_map = cls_attn.mean(dim=0).reshape(
+                grid_dim, grid_dim
+                ).cpu().numpy()
         else:
             attention_map = extract_attention_map(model, input_tensor)
 

@@ -7,10 +7,10 @@ import os
 import urllib.request
 from typing import Optional
 
+import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import timm
 from transformers import AutoModel
 
 
@@ -19,7 +19,9 @@ from transformers import AutoModel
 # =====================================================================
 
 class BaseDinoWrapper(nn.Module):
-    """Classe base que centraliza o carregamento, congelamento e extração de atenção do DINO."""
+    """Classe base que centraliza o carregamento, congelamento e extração de
+    atenção do DINO."""
+
     def __init__(self, model_name: str, freeze_backbone: bool = True):
         super().__init__()
         if "dinov3" in model_name:
@@ -43,8 +45,12 @@ class BaseDinoWrapper(nn.Module):
 
 
 class ConvPoolBlock(nn.Module):
-    """Bloco reutilizável: Conv2d -> BatchNorm -> ReLU -> [CBAM opcional] -> MaxPool2d."""
-    def __init__(self, in_channels: int, out_channels: int, use_cbam: bool = False):
+    """Bloco reutilizável: Conv2d -> BatchNorm -> ReLU -> [CBAM opcional] ->
+    MaxPool2d."""
+
+    def __init__(
+            self, in_channels: int, out_channels: int, use_cbam: bool = False,
+    ):
         super().__init__()
         layers = [
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
@@ -65,7 +71,9 @@ class ConvPoolBlock(nn.Module):
 # =====================================================================
 
 class DinoSpatialHybrid(BaseDinoWrapper):
-    """Combina a extração semântica do DINOv2/v3 com QUALQUER backbone do timm."""
+    """Combina a extração semântica do DINOv2/v3 com QUALQUER backbone do
+    timm."""
+
     def __init__(
             self,
             dino_model_name: str = "facebook/dinov2-base",
@@ -74,29 +82,50 @@ class DinoSpatialHybrid(BaseDinoWrapper):
             freeze_backbone: bool = True,
             head_checkpoint_path: Optional[str] = None,
     ):
-        super().__init__(model_name=dino_model_name, freeze_backbone=freeze_backbone)
+        super().__init__(
+            model_name=dino_model_name, freeze_backbone=freeze_backbone,
+        )
 
         self.universal_adapter = nn.Sequential(
             nn.Conv2d(self.dino_dim, 3, kernel_size=1, bias=False),
             nn.BatchNorm2d(3),
             nn.GELU(),
-            nn.Upsample(size=(224, 224), mode="bilinear", align_corners=False)
+            nn.Upsample(size=(224, 224), mode="bilinear", align_corners=False),
         )
 
         if head_checkpoint_path and os.path.exists(head_checkpoint_path):
-            print(f"  📂 Carregando pesos locais para o Head ({head_model_name}): {head_checkpoint_path}")
+            print(
+                f"  📂 Carregando pesos locais para o Head ("
+                f"{head_model_name}): {head_checkpoint_path}",
+            )
             self.head_model = timm.create_model(
-                head_model_name, pretrained=False, num_classes=num_classes, checkpoint_path=head_checkpoint_path
+                head_model_name, pretrained=False, num_classes=num_classes,
+                checkpoint_path=head_checkpoint_path,
             )
         else:
-            self.head_model = timm.create_model(head_model_name, pretrained=True, num_classes=num_classes)
+            self.head_model = timm.create_model(
+                head_model_name, pretrained=True, num_classes=num_classes,
+            )
 
     def _extract_spatial_grid(self, x: torch.Tensor) -> torch.Tensor:
         outputs = self.dino(pixel_values=x)
-        patch_tokens = outputs.last_hidden_state[:, 1:, :]
-        B, N, C = patch_tokens.shape
-        grid_size = int(math.sqrt(N))
-        return patch_tokens.reshape(B, grid_size, grid_size, C).permute(0, 3, 1, 2)
+        hidden_states = outputs.last_hidden_state
+        B, seq_len, C = hidden_states.shape
+        if int(math.sqrt(seq_len - 1)) ** 2 == (seq_len - 1):
+            num_patches = seq_len - 1
+        elif int(math.sqrt(seq_len - 5)) ** 2 == (seq_len - 5):
+            num_patches = seq_len - 5
+        else:
+            grid_size = int(math.sqrt(seq_len))
+            num_patches = grid_size * grid_size
+
+        grid_size = int(math.sqrt(num_patches))
+
+        patch_tokens = hidden_states[:, -num_patches:, :]
+
+        return patch_tokens.reshape(B, grid_size, grid_size, C).permute(
+            0, 3, 1, 2,
+        )
 
     def forward_features(self, x: torch.Tensor) -> torch.Tensor:
         spatial_map = self._extract_spatial_grid(x)
@@ -117,14 +146,34 @@ class DinoSpatialHybrid(BaseDinoWrapper):
 
 
 class DinoVisionTransformer(BaseDinoWrapper):
-    """Wrapper para integrar DINOv2/v3 ao pipeline de explicabilidade e classificação."""
-    def __init__(self, model_name: str, num_classes: int, freeze_backbone: bool = True):
+    """Wrapper para integrar DINOv2/v3 ao pipeline de explicabilidade e
+    classificação."""
+
+    def __init__(
+            self, model_name: str, num_classes: int,
+            freeze_backbone: bool = True, use_avg_pooling: bool = False,
+    ):
         super().__init__(model_name=model_name, freeze_backbone=freeze_backbone)
-        self.fc = nn.Linear(self.dino_dim, num_classes)
+
+        self.use_avg_pooling = use_avg_pooling
+        input_dim = self.dino_dim * 2 if use_avg_pooling else self.dino_dim
+
+        self.fc = nn.Linear(input_dim, num_classes)
 
     def forward_features(self, x: torch.Tensor) -> torch.Tensor:
         outputs = self.dino(pixel_values=x)
-        return outputs.last_hidden_state[:, 0, :]
+        hidden_states = outputs.last_hidden_state  # [B, Seq_Len, C]
+
+        cls_token = hidden_states[:, 0, :]
+
+        if not self.use_avg_pooling:
+            return cls_token
+
+        patch_tokens = hidden_states[
+            :, -196:, :]
+        patch_mean = patch_tokens.mean(dim=1)
+
+        return torch.cat([cls_token, patch_mean], dim=-1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         features = self.forward_features(x)
@@ -187,10 +236,12 @@ class MultiCancerNet_Attention(nn.Module):
         channels = [3, 32, 64, 128, 256]
 
         # Constrói os 4 blocos convolucionais com CBAM dinamicamente
-        self.features = nn.Sequential(*[
-            ConvPoolBlock(in_c, out_c, use_cbam=True)
-            for in_c, out_c in zip(channels[:-1], channels[1:])
-        ])
+        self.features = nn.Sequential(
+            *[
+                ConvPoolBlock(in_c, out_c, use_cbam=True)
+                for in_c, out_c in zip(channels[:-1], channels[1:])
+            ],
+        )
 
         self.classifier = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
@@ -198,7 +249,7 @@ class MultiCancerNet_Attention(nn.Module):
             nn.Linear(256, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
-            nn.Linear(512, num_classes)
+            nn.Linear(512, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -207,30 +258,38 @@ class MultiCancerNet_Attention(nn.Module):
 
 
 class MultiCancerNet_Attention_Hybrid(nn.Module):
-    def __init__(self, num_classes: int, d_model: int = 256, nhead: int = 8, num_layers: int = 2):
+    def __init__(
+            self, num_classes: int, d_model: int = 256, nhead: int = 8,
+            num_layers: int = 2,
+    ):
         super().__init__()
         channels = [3, 64, 128, d_model, d_model]
 
         # Constrói os 4 blocos convolucionais padrão dinamicamente
         self.cnn_backbone = nn.Sequential(
-            *[ConvPoolBlock(in_c, out_c, use_cbam=False) for in_c, out_c in zip(channels[:-1], channels[1:])],
-            nn.AdaptiveAvgPool2d((14, 14))
+            *[ConvPoolBlock(in_c, out_c, use_cbam=False) for in_c, out_c in
+              zip(channels[:-1], channels[1:])],
+            nn.AdaptiveAvgPool2d((14, 14)),
         )
 
         self.num_patches = 14 * 14
-        self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches, d_model))
+        self.pos_embedding = nn.Parameter(
+            torch.randn(1, self.num_patches, d_model),
+        )
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4,
-            activation="gelu", batch_first=True, dropout=0.1
+            activation="gelu", batch_first=True, dropout=0.1,
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_layers,
+        )
 
         self.classifier = nn.Sequential(
             nn.Linear(d_model, 256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.5),
-            nn.Linear(256, num_classes)
+            nn.Linear(256, num_classes),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -247,16 +306,29 @@ class MultiCancerNet_Attention_Hybrid(nn.Module):
 # =====================================================================
 
 HYBRID_CONFIGS = {
-    "dinov2_mobilenet_hybrid": ("facebook/dinov2-base", "mobilenetv3_large_100"),
+    "dinov2_mobilenet_hybrid": (
+        "facebook/dinov2-base", "mobilenetv3_large_100",
+    ),
     "dinov2_efficientnet_hybrid": ("facebook/dinov2-base", "efficientnet_b3"),
-    "dinov3_mobilenet_hybrid": ("facebook/dinov3-vitb16-pretrain-lvd1689m", "mobilenetv3_large_100"),
-    "dinov3_efficientnet_hybrid": ("facebook/dinov3-vitb16-pretrain-lvd1689m", "efficientnet_b3"),
+    "dinov3_mobilenet_hybrid": (
+        "facebook/dinov3-vitb16-pretrain-lvd1689m", "mobilenetv3_large_100",
+    ),
+    "dinov3_efficientnet_hybrid": (
+        "facebook/dinov3-vitb16-pretrain-lvd1689m", "efficientnet_b3",
+    ),
 }
 
-def _load_radimagenet_resnet50(num_classes: int, results_dir: Optional[str], url: Optional[str]) -> nn.Module:
-    """Função auxiliar para isolar o download e montagem do ResNet50 RadImageNet."""
+
+def _load_radimagenet_resnet50(
+        num_classes: int, results_dir: Optional[str], url: Optional[str],
+) -> nn.Module:
+    """Função auxiliar para isolar o download e montagem do ResNet50
+    RadImageNet."""
     if not results_dir or not url:
-        raise ValueError("results_dir e radimagenet_weights_url são obrigatórios para o RadImageNet.")
+        raise ValueError(
+            "results_dir e radimagenet_weights_url são obrigatórios para o "
+            "RadImageNet.",
+        )
 
     weights_path = os.path.join(results_dir, "RadImageNet-ResNet50_notop.pth")
     if not os.path.exists(weights_path):
@@ -267,26 +339,34 @@ def _load_radimagenet_resnet50(num_classes: int, results_dir: Optional[str], url
     state = torch.load(weights_path, map_location="cpu")
     model.load_state_dict(state, strict=False)
 
-    num_features = model.num_features.item() if hasattr(model.num_features, "item") else model.num_features
+    num_features = model.num_features.item() if hasattr(
+        model.num_features, "item",
+    ) else model.num_features
     model.fc = nn.Linear(int(num_features), num_classes)
     return model
 
 
 def build_model(
-    model_name: str,
-    num_classes: int,
-    pretrained: bool = True,
-    results_dir: Optional[str] = None,
-    radimagenet_weights_url: Optional[str] = None,
+        model_name: str,
+        num_classes: int,
+        pretrained: bool = True,
+        results_dir: Optional[str] = None,
+        radimagenet_weights_url: Optional[str] = None,
 ) -> nn.Module:
     # 1. Roteamento de Modelos Híbridos DINO
     if model_name in HYBRID_CONFIGS:
         dino_id, head_id = HYBRID_CONFIGS[model_name]
-        return DinoSpatialHybrid(dino_model_name=dino_id, head_model_name=head_id, num_classes=num_classes)
+        return DinoSpatialHybrid(
+            dino_model_name=dino_id, head_model_name=head_id,
+            num_classes=num_classes,
+        )
 
     # 2. Roteamento de Transformers DINO Puros
     if "dinov2" in model_name or "dinov3" in model_name:
-        return DinoVisionTransformer(model_name=model_name, num_classes=num_classes, freeze_backbone=True)
+        return DinoVisionTransformer(
+            model_name=model_name, num_classes=num_classes,
+            freeze_backbone=True, use_avg_pooling=True
+        )
 
     # 3. Roteamento de Redes Customizadas CBAM
     if model_name == "cbam_attention":
@@ -297,7 +377,11 @@ def build_model(
 
     # 4. Roteamento RadImageNet
     if model_name == "resnet50_radimagenet":
-        return _load_radimagenet_resnet50(num_classes, results_dir, radimagenet_weights_url)
+        return _load_radimagenet_resnet50(
+            num_classes, results_dir, radimagenet_weights_url,
+        )
 
     # 5. Fallback padrão para a biblioteca timm
-    return timm.create_model(model_name, pretrained=pretrained, num_classes=num_classes)
+    return timm.create_model(
+        model_name, pretrained=pretrained, num_classes=num_classes,
+    )

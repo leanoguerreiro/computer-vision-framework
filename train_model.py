@@ -15,6 +15,7 @@ from config import (
     TRAINING_DATASET_ROOT,
     TRAINING_PLOT_DIR,
     TRAINING_RESULTS_DIR,
+    ATTENTION_BASED_MODELS
 )
 from cv_framework import (
     BenchmarkContext,
@@ -37,7 +38,8 @@ def train_single_model(model_name: str, batch_size: int, epochs: int, lr: float)
         results_dir=Path(TRAINING_RESULTS_DIR),
         batch_size=batch_size,
         num_epochs=epochs,
-        learning_rate=lr
+        learning_rate=lr,
+        attention_based_models=ATTENTION_BASED_MODELS
     )
 
     context.plot_dir.mkdir(parents=True, exist_ok=True)
