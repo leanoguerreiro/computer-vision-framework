@@ -4,3 +4,12 @@ datasets/*/val
 datasets/*/test
 *.pth
 *.lock
+
+plots
+plots_standart
+data
+results
+robustness_analysis
+robustness_analysis_standard
+robustness_analysis_standart
+results_standart
